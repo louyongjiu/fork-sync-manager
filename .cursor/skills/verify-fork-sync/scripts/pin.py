@@ -43,10 +43,6 @@ def run(label: str, *extra: str) -> tuple[str, str, list[str]]:
     return ("run", label, list(extra))
 
 
-def pr(*args: str) -> tuple[str, list[str]]:
-    return ("pr", list(args))
-
-
 SCENARIOS: dict[str, list[tuple]] = {
     "dry-run": [
         run("baseline"),
@@ -56,36 +52,17 @@ SCENARIOS: dict[str, list[tuple]] = {
         commit("alice/widget", "shared.txt", "fork edit"),
         run("conflict"),
     ],
-    "widget-lifecycle": [
+    "own-commits-merge": [
         LIVE,
-        commit("octo/widget", "feature.txt", "w1"),
-        run("create"),
-        run("reuse"),
-        commit("octo/widget", "feature.txt", "w2"),
-        run("rebuild"),
-        pr("merge", "--repo", "alice/widget", "--number", "1", "--method", "merge"),
-        run("after-merge"),
-        commit("octo/widget", "feature.txt", "w3"),
-        run("new-pr"),
-        run("reuse-new-pr"),
+        commit("alice/widget", "fork.txt", "fork only"),
+        commit("octo/widget", "upstream.txt", "upstream only"),
+        run("merge"),
+        run("again"),
     ],
-    "gadget-closed": [
+    "mirror-fast-forward": [
         LIVE,
         commit("octo/gadget", "g.txt", "gadget 1"),
-        run("create"),
-        pr("close", "--repo", "alice/gadget", "--number", "1"),
-        run("closed-unchanged"),
-        commit("octo/gadget", "g.txt", "gadget 2"),
-        run("closed-new-upstream"),
-    ],
-    "squash": [
-        LIVE,
-        commit("octo/widget", "feature.txt", "w1"),
-        run("create"),
-        pr("merge", "--repo", "alice/widget", "--number", "1", "--method", "squash", "--delete-branch"),
-        run("after-squash"),
-        pr("merge", "--repo", "alice/widget", "--number", "2", "--method", "merge"),
-        run("after-follow-up"),
+        run("ff"),
     ],
     "conflict-live": [
         LIVE,
@@ -93,6 +70,14 @@ SCENARIOS: dict[str, list[tuple]] = {
         commit("alice/widget", "shared.txt", "fork edit"),
         run("conflict"),
         run("conflict-again"),
+    ],
+    "conflict-then-resolve": [
+        LIVE,
+        commit("octo/widget", "shared.txt", "upstream v2"),
+        commit("alice/widget", "shared.txt", "fork edit"),
+        run("conflict"),
+        commit("alice/widget", "shared.txt", "upstream v2"),
+        run("resolved"),
     ],
     "exclude-disable": [
         ("config", ["--exclude", "widget", "--repos-json", '[{"fork": "alice/gadget", "enabled": false}]']),
@@ -109,15 +94,6 @@ SCENARIOS: dict[str, list[tuple]] = {
     ],
     "no-token": [run("no-token", "--no-token")],
     "bad-token": [run("bad-token", "--token", "not-the-token")],
-    "sync-branch-main": [
-        ("config", ["--dry-run", "false", "--sync-branch", "main", "--exclude", "gadget"]),
-        commit("octo/widget", "feature.txt", "w1"),
-        run("sync-branch-main"),
-    ],
-    "sync-branch-invalid": [
-        ("config", ["--sync-branch", "bad..name"]),
-        run("sync-branch-invalid"),
-    ],
     "disabled-unreachable": [
         ("config", ["--repos-json", '[{"fork": "alice/ghost", "enabled": false}]']),
         run("disabled-unreachable"),
@@ -187,15 +163,6 @@ def describe_refs(run_id: str, state: dict[str, Any]) -> list[str]:
     return lines
 
 
-def describe_prs(state: dict[str, Any]) -> list[str]:
-    lines = []
-    for repo in sorted(state["prs"]):
-        for p in state["prs"][repo]:
-            lines.append(f"{repo} #{p['number']} {p['state']} merged={p['merged']} head={p['head']['ref']}@"
-                         f"{p['head']['sha']} base={p['base']['ref']} title={p['title']!r}")
-    return lines
-
-
 def read(path: Path) -> str:
     return path.read_text(encoding="utf-8") if path.exists() else ""
 
@@ -212,9 +179,7 @@ def play(name: str, steps: list[tuple], sync_py: str | None) -> str:
         for index, step in enumerate(steps, start=1):
             kind = step[0]
             if kind != "run":
-                args = ["pr", step[1][0], "--run", run_id, *step[1][1:]] if kind == "pr" \
-                    else [kind, "--run", run_id, *step[1]]
-                result = harness(args)
+                result = harness([kind, "--run", run_id, *step[1]])
                 body = result.stdout if kind != "config" else ""
                 out.append(f"## {index:02d} {kind} {' '.join(step[1])} -> exit {result.returncode}")
                 out += [shas.normalize(line) for line in (body + result.stderr).splitlines() if line.strip()]
@@ -236,7 +201,6 @@ def play(name: str, steps: list[tuple], sync_py: str | None) -> str:
             block += ["-- summary"] + read(step_dir / "step-summary.md").splitlines()
             block += ["-- api"] + read(step_dir / "api-requests.jsonl").splitlines()
             block += ["-- refs"] + describe_refs(run_id, state)
-            block += ["-- prs"] + describe_prs(state)
             out += [shas.normalize(line) for line in block]
     finally:
         harness(["cleanup", "--run", run_id])

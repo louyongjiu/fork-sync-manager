@@ -12,17 +12,17 @@
 
 ## 驱动约定
 
-- 每个功能都从刚 launch 好的状态开始，除非文件里的 `Preconditions:` 另有说明。功能之间互相影响（PR 编号、分支状态）时，重新 launch，不要手工去还原。
-- 用户动作一律通过 harness 的子命令完成：`config`、`commit`、`pr`、`delete-branch`。不要直接改临时目录里的裸仓库或替身状态。
+- 每个功能都从刚 launch 好的状态开始，除非文件里的 `Preconditions:` 另有说明。功能之间互相影响（分支状态）时，重新 launch，不要手工去还原。
+- 用户动作一律通过 harness 的子命令完成：`config`、`commit`。不要直接改临时目录里的裸仓库或替身状态。
 - 命令按原样执行，引号里的文本、分支名、文件名不要改。
 - 每次 `run` 都带一个能说明这一步的 `--label`，证据目录按 `NN-run-<label>` 排序。
 
 ## 证明与跳过的报告方式
 
-- 一项行为的证明包括：`run` 的屏幕摘要、`NN-run-<label>\` 目录（stdout、退出码、前后分支、PR 状态、API 请求）和 Actions 摘要 `step-summary.md`。
-- 涉及写入的行为（推送、建 PR、改 PR），必须在 `state-after.json` 或 `api-requests.jsonl` 里另外确认一次，不能只看状态行。
-- 声称「没有写入」时，要给出 `api-requests.jsonl` 里没有 `POST`、`PATCH` 的检索结果，以及所有分支都是 `unchanged`。
-- 报告时写明功能 ID（如 `pr-create`）和走的入口。
+- 一项行为的证明包括：`run` 的屏幕摘要、`NN-run-<label>\` 目录（stdout、退出码、前后分支、API 请求）和 Actions 摘要 `step-summary.md`。
+- 涉及写入的行为（推送到目标分支），必须在 `state-after.json` 的分支 sha 里另外确认一次，不能只看状态行。干净合并的 `api-requests.jsonl` 里 method 都是 `GET`。
+- 要证明远程分支保持原提交，给出 `api-requests.jsonl` 里每条请求的 method 都是 `GET`，以及所有分支都是 `unchanged`。
+- 报告时写明功能 ID（如 `ff-push`）和走的入口。
 - 某条路径走不通时，报告尝试的命令和缺少的前提。不要用别的入口代替，然后说「已验证」。
 
 ## 功能文件约定
@@ -38,8 +38,7 @@
 
 ## 功能
 
-- [试运行](./dry-run.md)：`dry_run: true` 下的检测、冲突预演，以及不写入任何东西。
-- [同步并开 PR](./sync-pr.md)：推送自动化分支、新建/更新/复用同步 PR、合并后变为 `up_to_date`、默认分支不被改写。
-- [合并冲突](./conflict.md)：冲突时报告冲突文件、不推送，任务仍然成功退出。
-- [关闭或合并同步 PR 之后](./closed-pr.md)：用户关闭、合并、squash 合并同步 PR 后，后续运行的结果。
-- [自动发现与配置](./discovery-config.md)：发现哪些 Fork、归档跳过、`exclude`、`enabled: false`、单仓库覆盖、账号校验、缺少 token、`sync_branch`。
+- [试运行](./dry-run.md)：`dry_run: true` 下的检测和冲突预演。远程分支保持原提交。冲突时退出码是 `1`。
+- [合并到目标分支](./merge.md)：快进或生成合并提交，推送到目标分支。再运行一次变为 `up_to_date`。
+- [合并冲突](./conflict.md)：报告冲突文件，目标分支保持原提交，任务退出码 `1`。
+- [自动发现与配置](./discovery-config.md)：发现哪些 Fork、归档跳过、`exclude`、`enabled: false`、单仓库覆盖、账号校验、缺少 token。

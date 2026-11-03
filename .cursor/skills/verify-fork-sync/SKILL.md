@@ -1,15 +1,15 @@
 ---
 name: verify-fork-sync
-description: 在本机按 GitHub Actions「Daily Upstream Sync」的方式运行 Fork Sync Manager 的 scripts/sync.py，用本地裸仓库和本地 GitHub API 替身驱动同步、建 PR、冲突、关闭/合并 PR、自动发现与配置等用户路径，并留下 stdout、退出码、分支前后对比、PR 状态和 API 请求记录作为证据。修改 scripts/sync.py、config/repos.yml、.github/workflows/daily-sync.yml 之后，需要证明行为时使用。
+description: 在本机按 GitHub Actions「Daily Upstream Sync」的方式运行 Fork Sync Manager 的 scripts/sync.py，用本地裸仓库和本地 GitHub API 替身驱动同步、冲突、手工处理冲突后的再次运行、自动发现与配置等用户路径，并留下 stdout、退出码、分支前后对比和 API 请求记录作为证据。修改 scripts/sync.py、config/repos.yml、.github/workflows/daily-sync.yml 之后，需要证明行为时使用。
 ---
 
 # 验证 Fork Sync Manager
 
 用户接触的界面只有一个：GitHub Actions 每天（或手动 `Run workflow`）在管理仓库里执行 `python scripts/sync.py`。用户能看到的结果有：
-- Actions 日志里的状态行（`UPDATED:`、`UP_TO_DATE:`、`CONFLICT:`、`SKIPPED:`、`FAILED:`、`DRY_RUN:`、`ERROR:`）；
+- Actions 日志里的状态行（`MERGED:`、`UP_TO_DATE:`、`CONFLICT:`、`SKIPPED:`、`FAILED:`、`DRY_RUN:`、`ERROR:`）；
 - 任务摘要（`GITHUB_STEP_SUMMARY` 写入的 Markdown）；
-- 任务退出码：`0` 表示成功；`1` 表示有仓库失败；`2` 表示配置错误或缺少 token；
-- 各个 Fork 上的 `automation/upstream-sync` 分支和同步 PR。
+- 任务退出码：`0` 表示没有仓库失败或冲突；`1` 表示有仓库失败或冲突，或列出 Fork 时出错；`2` 表示配置错误或缺少 token；
+- 各个 Fork 的目标分支。干净合并之后，这个分支包含上游提交。
 
 本 skill 用 `scripts/harness.py` 在本机复现这条路径，具体分工如下：
 
@@ -21,11 +21,13 @@ description: 在本机按 GitHub Actions「Daily Upstream Sync」的方式运行
 | `https://github.com/<owner>/<repo>.git` | 通过临时 `GIT_CONFIG_GLOBAL` 里的 `url.insteadOf` 指到本地裸仓库 |
 | 真实网络 | `HTTPS_PROXY` 指向 `127.0.0.1:9`，任何误发到 github.com 的请求都会立即失败 |
 
-替身实现了 GitHub 的这些 PR 规则：
-- 打开的 PR 的 `head.sha` 跟随分支变化；关闭后固定为关闭时的值。
-- 已合并的 PR 不能重新打开（返回 422）。
-- 分支在关闭后被删除、强制推送或重建，PR 就不能重新打开（返回 422）。
-- 同一个 head 和 base 已经有打开的 PR 时，不能再创建（返回 422）；head 相对 base 没有新提交时，也不能创建（返回 422）。
+替身回答 `scripts/sync.py` 实际调用的接口：
+- `GET /user/repos` 返回管理账号名下的仓库。本机只有 `alice` 的 4 个仓库，一页。
+- `GET /repos/{owner}/{repo}` 返回仓库元数据。Fork 的响应里带 `parent`。
+- 请求没有带约定的 token，或 token 不对，返回 401，正文是 `Bad credentials`。
+- 每个对外请求追加一行到 `api-requests.jsonl`，记下方法、路径、状态码和请求体字段。
+
+git 推送不经过这个 HTTP 替身。推送结果写在本地裸仓库的分支上。
 
 ## 前置
 
@@ -87,19 +89,15 @@ $run = "<同一个 id>"
 
 | 用户或外部动作 | 命令 |
 |---|---|
-| 修改管理仓库的 `config/repos.yml` | `config --dry-run true\|false`、`--sync-branch <名>`、`--exclude <名> ...`、`--owner <名>`、`--max-repos <n>`、`--discover true\|false`、`--settings-json '<JSON 对象>'`（原样合并进 `settings:`，用来写字符串布尔值或未知键）、`--repos-json '<JSON 列表>'`、`--reset`（重新复制仓库里的版本，可以和其他参数一起用） |
+| 修改管理仓库的 `config/repos.yml` | `config --dry-run true\|false`、`--exclude <名> ...`、`--owner <名>`、`--max-repos <n>`、`--discover true\|false`、`--settings-json '<JSON 对象>'`（原样合并进 `settings:`，用来写字符串布尔值或未知键）、`--repos-json '<JSON 列表>'`、`--reset`（重新复制仓库里的版本，可以和其他参数一起用） |
 | 上游维护者或用户推送提交 | `commit --repo <owner/repo> [--branch <分支>] [--from <已有分支>] --file <路径> --text <整行内容>`（文件整体替换为这一行） |
-| 用户在 GitHub 上关闭 PR | `pr close --repo alice/<repo> --number <n>` |
-| 用户合并 PR | `pr merge --repo alice/<repo> --number <n> --method merge\|squash [--delete-branch]` |
-| 用户删除分支 | `delete-branch --repo alice/<repo> --branch <分支>`（如果这个分支上有打开的 PR，替身会像 GitHub 一样把它关闭） |
 | Actions 运行一次同步 | `run --label <标签> [--no-token \| --token <错误的值>] [--sync-py <另一份 sync.py>]` |
-| 只看当前状态 | `state --label <标签>`、`pr list` |
+| 只看当前状态 | `state --label <标签>` |
 
 `run` 的输出包括：
 - `sync.py exit code`；
 - 每个仓库的状态行；
-- 每个 Fork 各分支在运行前后的 sha，默认分支被改写时行尾会出现 `<-- DEFAULT BRANCH WRITTEN`；
-- 运行后的 PR 列表；
+- 每个 Fork 各分支在运行前后的 sha。默认分支变到一个不包含旧提交的提交时，行尾出现 `<-- DEFAULT BRANCH REWRITTEN`。判断方法是对本地裸仓库跑 `git merge-base --is-ancestor`，看旧 sha 是不是新 sha 的祖先。
 - 本次运行的 API 请求数。
 
 harness 本身的退出码等于 `sync.py` 的退出码；harness 自己出错时返回 `3`。
@@ -108,16 +106,17 @@ harness 本身的退出码等于 `sync.py` 的退出码；harness 自己出错�
 
 ## 行为快照（重构时用）
 
-`scripts/pin.py` 把 16 个固定场景在真实 `sync.py` 上各跑一遍，记成一份规范化文本。每个场景单独 launch 一次运行，4 个并行，结束后自动 cleanup，整体约 3 分钟。场景覆盖：
-- 试运行；
-- 同步并开 PR 的完整生命周期；
-- 关闭和 squash 合并 PR；
-- 冲突；
+`scripts/pin.py` 把 14 个固定场景在真实 `sync.py` 上各跑一遍，记成一份规范化文本。每个场景单独 launch 一次运行，4 个并行，结束后自动 cleanup，整体约 3 分钟。场景覆盖：
+- 试运行，其中冲突那一步退出码是 `1`；
+- Fork 自己有提交时生成合并提交，再运行变为 `up_to_date`；
+- 纯镜像 Fork 快进，目标和上游指向同一个提交；
+- 冲突持续两次；
+- 冲突之后把文件改成和上游相同的文本，再运行得到 `merged`；
 - 排除和停用；
-- 单仓库覆盖；
+- 单仓库覆盖上游分支；
 - 账号校验；
-- 缺少或错误的 token；
-- `sync_branch` 设为 `main` 或不合法的名字；
+- 缺少 token；
+- 错误的 token；
 - 停用但访问不到的仓库；
 - 未知键；
 - 字符串布尔值；
@@ -132,8 +131,7 @@ harness 本身的退出码等于 `sync.py` 的退出码；harness 自己出错�
 记录里每一步都有：
 - `sync.py` 的退出码、stdout、stderr 和任务摘要；
 - 每个 API 请求；
-- 每个分支指向的提交、树和父提交；
-- PR 列表。
+- 每个分支指向的提交、树和父提交。
 
 commit 的 sha 每次运行都不同，所以每个场景里按首次出现的顺序把它们改名成 `C1`、`C2`……树的 sha 只由内容决定，保持原样（大写），合并结果的内容有任何不同都能看出来。同一份代码连跑两次，记录应当完全一致；`--compare` 在两份记录有差异时以退出码 1 结束，并打印差异。要对比改动前的版本，可以用 `git show <提交>:scripts/sync.py` 存一份副本，再传给 `--sync-py`。
 
@@ -145,17 +143,17 @@ commit 的 sha 每次运行都不同，所以每个场景里按首次出现的�
 - `repos.yml`：本次运行使用的配置
 - `stdout.txt`、`stderr.txt`、`exit-code.txt`
 - `step-summary.md`：Actions 任务摘要的原文
-- `state-before.json`、`state-after.json`：所有仓库的分支和 sha，以及 PR 状态
+- `state-before.json`、`state-after.json`：所有仓库的分支和 sha
 - `api-requests.jsonl`：本次运行发出的每个 API 请求（方法、路径、状态码、请求体字段）
 - `report.txt`：和屏幕输出相同的摘要
 
 `state` 写入 `NN-state-<标签>\state.json`。`cleanup` 时会再把 `server.log`、完整的 `api-requests.jsonl` 和 `run.json` 复制到证据目录根下。
 
 证明一项行为时：
-- 走用户真实会走的路径：改配置、推送提交、在 PR 上操作，然后 `run`。不要直接改替身的内部状态。
+- 走用户真实会走的路径：改配置、推送提交，然后 `run`。不要直接改替身的内部状态。
 - 同时保留动作和结果：每一步都有自己的 `NN-` 目录，按顺序对得上。
-- 验证副作用：比对 `state-before.json` 和 `state-after.json` 中的分支，并在 `api-requests.jsonl` 里确认发出了（或没有发出）`POST`、`PATCH`。只看状态行不够。
-- `dry_run` 的证明必须包含 `api-requests.jsonl` 里只有 `GET`，以及所有分支 `unchanged`。
+- 验证副作用：比对 `state-before.json` 和 `state-after.json` 里的分支 sha。干净合并的 `api-requests.jsonl` 里每条请求的 method 都是 `GET`，推送发生在 git。冲突时退出码是 `1`，目标分支的 sha 不变，请求同样只有 `GET`。
+- `dry_run` 的证明要包含 `api-requests.jsonl` 里只有 `GET`，以及所有分支 `unchanged`。试运行里的冲突同样让退出码变成 `1`。
 
 ## Cleanup
 
@@ -180,9 +178,9 @@ commit 的 sha 每次运行都不同，所以每个场景里按首次出现的�
 
 - Fine-grained PAT 的真实权限、过期，以及跨组织私有上游的访问
 - 真实 `/user/repos` 的分页和授权范围（替身只返回 `alice` 名下的 4 个仓库，只有一页）
-- GitHub 真实的 PR 规则，包括合并检查、分支保护、自动删除分支等设置（替身只实现上面列出的那几条）
+- 分支保护。本地裸仓库接受对目标分支的推送，保护规则拒绝 Token 的情况要在真实 GitHub 上才能看到
 - 真实网络、限速和超时
 - `ubuntu-latest` 运行器、`actions/setup-python@v5` 和 Python 3.12（本机是 Windows，Python 版本以 `.venv` 为准）
 - workflow 的定时触发和 `concurrency` 分组
 
-在真实环境验证的入口：在管理仓库里把 `config/repos.yml` 保持为 `dry_run: true`，在 `Actions → Daily Upstream Sync → Run workflow` 手动触发，或者执行 `gh workflow run "Daily Upstream Sync"`，然后在运行页面看摘要。这个本地仓库目前没有配置远端，也没有提交，所以这条路径还没有跑过。
+在真实环境验证的入口：在管理仓库里把 `config/repos.yml` 保持为 `dry_run: true`，在 `Actions → Daily Upstream Sync → Run workflow` 手动触发，或者执行 `gh workflow run "Daily Upstream Sync"`，然后在运行页面看摘要。origin 是一个空的 GitHub 仓库，本机提交还没有推上去，所以这条路径还没有在 GitHub 上跑过。

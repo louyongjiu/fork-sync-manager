@@ -8,6 +8,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -172,7 +173,9 @@ def list_sync_prs(fork: str, head: str, base: str) -> list[dict[str, Any]]:
         "per_page": 100,
     })
     result = api_request("GET", f"/repos/{fork}/pulls?{query}")
-    return result if isinstance(result, list) else []
+    if not isinstance(result, list):
+        raise SyncError(f"GitHub /repos/{fork}/pulls returned an unexpected result")
+    return result
 
 
 def ensure_pull_request(
@@ -539,6 +542,8 @@ def main() -> int:
         settings, repos = load_config()
     except Exception as exc:
         log(f"ERROR: {exc}")
+        if not isinstance(exc, SyncError):
+            log(traceback.format_exc().rstrip())
         return 2
 
     dry_run = bool(settings.get("dry_run", False))
@@ -566,6 +571,8 @@ def main() -> int:
             counts["failed"] += 1
             rows.append({"repo": repo_name, "status": "failed", "details": str(exc)})
             log(f"FAILED: {exc}")
+            if not isinstance(exc, SyncError):
+                log(traceback.format_exc().rstrip())
 
     append_summary(rows, counts)
 

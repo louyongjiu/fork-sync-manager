@@ -12,7 +12,6 @@ import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -120,12 +119,11 @@ def git(
     cwd: Path,
     *,
     check: bool = True,
-    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
         ["git", *args],
         cwd=str(cwd),
-        env=env or git_env(),
+        env=git_env(),
         text=True,
         capture_output=True,
     )
@@ -143,11 +141,6 @@ def is_ancestor(cwd: Path, older: str, newer: str) -> bool:
         return False
     detail = (result.stderr or result.stdout).strip()
     raise SyncError(f"git merge-base failed: {detail}")
-
-
-def ref_exists(cwd: Path, ref: str) -> bool:
-    result = git(["show-ref", "--verify", "--quiet", ref], cwd, check=False)
-    return result.returncode == 0
 
 
 def remote_branch_exists(cwd: Path, repo_slug: str, branch: str) -> bool:
@@ -264,7 +257,7 @@ def sync_one(
     settings: dict[str, Any],
     dry_run: bool,
 ) -> tuple[str, str]:
-    fork = validate_repo_slug(item.get("fork"), "fork")
+    fork = item["fork"]
     fork_meta = repo_metadata(fork)
 
     if not item.get("enabled", True):
@@ -349,14 +342,12 @@ def sync_one(
         # latest upstream. This avoids creating a new merge commit every day.
         reusable = (
             has_remote_sync_branch
-            and ref_exists(workdir, sync_ref)
             and is_ancestor(workdir, target_ref, sync_ref)
             and is_ancestor(workdir, upstream_ref, sync_ref)
         )
 
         if reusable:
             git(["checkout", "-B", sync_branch, sync_ref], workdir)
-            pushed = False
         else:
             git(["checkout", "-B", sync_branch, target_ref], workdir)
             merge = git(
@@ -380,7 +371,7 @@ def sync_one(
                 sha = git(["rev-parse", "HEAD"], workdir).stdout.strip()
                 return "dry_run", f"Would push merge {sha[:12]} and open/update PR"
 
-            if has_remote_sync_branch and old_sync_sha:
+            if has_remote_sync_branch:
                 git(
                     ["push",
                      f"--force-with-lease=refs/heads/{sync_branch}:{old_sync_sha}",
@@ -393,7 +384,6 @@ def sync_one(
                     ["push", "origin", f"HEAD:refs/heads/{sync_branch}"],
                     workdir,
                 )
-            pushed = True
 
         if dry_run:
             return "dry_run", "Would ensure PR for existing automation branch"
@@ -428,7 +418,7 @@ Please review the diff and CI checks before merging.
             head_sha=head_sha,
         )
 
-        action = "reused" if reusable else ("pushed" if pushed else "checked")
+        action = "reused" if reusable else "pushed"
         url_text = f" | {pr_url}" if pr_url else ""
         if pr_status == "closed_by_user":
             return "skipped", f"PR was previously closed and sync branch has not changed: {pr_url}"
@@ -553,14 +543,7 @@ def main() -> int:
     counts = dict.fromkeys(STATUS_LABELS, 0)
 
     for index, item in enumerate(repos, start=1):
-        if not isinstance(item, dict):
-            row = {"repo": f"entry-{index}", "status": "failed", "details": "entry must be a YAML object"}
-            rows.append(row)
-            counts["failed"] += 1
-            log(f"[{index}/{len(repos)}] FAILED: {row['details']}")
-            continue
-
-        repo_name = str(item.get("fork", f"entry-{index}"))
+        repo_name = item["fork"]
         log(f"\n[{index}/{len(repos)}] Processing {repo_name}")
         try:
             status, details = sync_one(item, settings, dry_run)

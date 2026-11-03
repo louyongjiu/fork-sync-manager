@@ -155,9 +155,9 @@ def run_tlc(java: str, jar: Path, work: Path, out_dir: Path, check: tuple[str, s
         got = "deadlock"
     else:
         got = "error"
-    states = re.search(r"(\d+) distinct states found", output)
+    states = re.findall(r"(\d+) distinct states found", output)
     return {"config": cfg_name, "rule": rule, "expected": expected, "got": got, "note": note,
-            "states": int(states.group(1)) if states else None,
+            "states": int(states[-1]) if states else None,
             "path": action_path(output) if got == "violated" else [], "output": str(out_dir / f"{tag}.out")}
 
 

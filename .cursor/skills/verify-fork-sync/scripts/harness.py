@@ -151,21 +151,22 @@ def admin(run: dict[str, Any], path: str, payload: Any = None) -> Any:
     return body
 
 
-def process_alive(pid: int) -> bool:
+def is_run_process(pid: int, run_id: str) -> bool:
+    # Parallel runs reuse pids quickly, so a recorded pid only counts while its
+    # command line still carries this run's --run-id.
     if os.name == "nt":
-        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+        query = f"(Get-CimInstance Win32_Process -Filter 'ProcessId={int(pid)}').CommandLine"
+        out = subprocess.run(["powershell", "-NoProfile", "-Command", query],
                              capture_output=True, text=True).stdout
-        return f'"{pid}"' in out
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
+    else:
+        out = subprocess.run(["ps", "-o", "args=", "-p", str(pid)], capture_output=True, text=True).stdout
+    tokens = out.split()
+    return any(a == "--run-id" and b == run_id for a, b in zip(tokens, tokens[1:]))
 
 
 def kill_pid(pid: int) -> None:
     if os.name == "nt":
-        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
+        subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
     else:
         os.kill(pid, 15)
 
@@ -570,10 +571,10 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
             pass
     deadline = time.time() + 10
     pids = [p for p in (run.get("server_pid"), run.get("launcher_pid")) if p]
-    while time.time() < deadline and any(process_alive(p) for p in pids):
+    while time.time() < deadline and any(is_run_process(p, run["run_id"]) for p in pids):
         time.sleep(0.3)
     for pid in pids:
-        if process_alive(pid):
+        if is_run_process(pid, run["run_id"]):
             kill_pid(pid)
             print(f"stopped pid {pid} (started by this run)")
     remove_tree(scratch)
@@ -591,7 +592,7 @@ def cmd_list(_args: argparse.Namespace) -> int:
         run_file = path / "run.json"
         if run_file.exists():
             run = json.loads(run_file.read_text(encoding="utf-8"))
-            alive = run.get("server_pid") and process_alive(run["server_pid"])
+            alive = run.get("server_pid") and is_run_process(run["server_pid"], run["run_id"])
             print(f"{run['run_id']} port={run.get('port')} server={'up' if alive else 'down'} scratch={path}")
     return 0
 

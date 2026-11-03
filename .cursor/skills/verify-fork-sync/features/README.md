@@ -40,5 +40,6 @@
 
 - [试运行](./dry-run.md)：`dry_run: true` 下的检测和冲突预演。远程分支保持原提交。冲突时退出码是 `1`。
 - [合并到目标分支](./merge.md)：快进或生成合并提交，推送到目标分支。再运行一次变为 `up_to_date`。
+- [审查 Pull Request](./review-pr.md)：配置了开发分支时，目标分支的更新通过 Pull Request 进入开发分支。
 - [合并冲突](./conflict.md)：报告冲突文件，目标分支保持原提交，任务退出码 `1`。
 - [自动发现与配置](./discovery-config.md)：发现哪些 Fork、归档跳过、`exclude`、`enabled: false`、单仓库覆盖、账号校验、缺少 token。

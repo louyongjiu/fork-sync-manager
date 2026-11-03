@@ -1,6 +1,6 @@
 ---
 name: verify-fork-sync
-description: 在本机按 GitHub Actions「Daily Upstream Sync」的方式运行 Fork Sync Manager 的 scripts/sync.py，用本地裸仓库和本地 GitHub API 替身驱动同步、冲突、手工处理冲突后的再次运行、自动发现与配置等用户路径，并留下 stdout、退出码、分支前后对比和 API 请求记录作为证据。修改 scripts/sync.py、config/repos.yml、.github/workflows/daily-sync.yml 之后，需要证明行为时使用。
+description: 在本机按 GitHub Actions「Daily Upstream Sync」的方式运行 Fork Sync Manager 的 scripts/sync.py，用本地裸仓库和本地 GitHub API 替身驱动同步、冲突、手工处理冲突后的再次运行、开发分支上的审查 Pull Request、自动发现与配置等用户路径，并留下 stdout、退出码、分支前后对比、Pull Request 列表和 API 请求记录作为证据。修改 scripts/sync.py、config/repos.yml、.github/workflows/daily-sync.yml 之后，需要证明行为时使用。
 ---
 
 # 验证 Fork Sync Manager
@@ -10,6 +10,7 @@ description: 在本机按 GitHub Actions「Daily Upstream Sync」的方式运行
 - 任务摘要（`GITHUB_STEP_SUMMARY` 写入的 Markdown）；
 - 任务退出码：`0` 表示没有仓库失败或冲突；`1` 表示有仓库失败或冲突，或列出 Fork 时出错；`2` 表示配置错误或缺少 token；
 - 各个 Fork 的目标分支。干净合并之后，这个分支包含上游提交。
+- 配置了开发分支时，从目标分支开向开发分支的 Pull Request。自动合入的上游提交在目标分支上。开发分支还不存在时，脚本用合并前的目标提交创建它。之后的新提交来自这个 Pull Request，或者来自手工推送。
 
 本 skill 用 `scripts/harness.py` 在本机复现这条路径，具体分工如下：
 
@@ -24,6 +25,9 @@ description: 在本机按 GitHub Actions「Daily Upstream Sync」的方式运行
 替身回答 `scripts/sync.py` 实际调用的接口：
 - `GET /user/repos` 返回管理账号名下的仓库。本机只有 `alice` 的 4 个仓库，一页。
 - `GET /repos/{owner}/{repo}` 返回仓库元数据。Fork 的响应里带 `parent`。
+- `GET /repos/{owner}/{repo}/pulls` 按 `state`、`head`、`base` 过滤。`state=all` 同时返回打开和关闭的。结果按编号从大到小。
+- `POST /repos/{owner}/{repo}/pulls` 创建 Pull Request。同一个 head 和 base 已经有打开的 Pull Request，或者 head 上没有 base 缺少的提交时，返回 422。
+- 打开的 Pull Request，`head.sha` 跟着 head 分支走。关闭之后，`head.sha` 停在关闭时的提交。
 - 请求没有带约定的 token，或 token 不对，返回 401，正文是 `Bad credentials`。
 - 每个对外请求追加一行到 `api-requests.jsonl`，记下方法、路径、状态码和请求体字段。
 
@@ -91,6 +95,9 @@ $run = "<同一个 id>"
 |---|---|
 | 修改管理仓库的 `config/repos.yml` | `config --dry-run true\|false`、`--exclude <名> ...`、`--owner <名>`、`--max-repos <n>`、`--discover true\|false`、`--settings-json '<JSON 对象>'`（原样合并进 `settings:`，用来写字符串布尔值或未知键）、`--repos-json '<JSON 列表>'`、`--reset`（重新复制仓库里的版本，可以和其他参数一起用） |
 | 上游维护者或用户推送提交 | `commit --repo <owner/repo> [--branch <分支>] [--from <已有分支>] --file <路径> --text <整行内容>`（文件整体替换为这一行） |
+| 列出 Pull Request | `pr list` |
+| 关闭 Pull Request | `pr close --repo <owner/repo> --number <编号>` |
+| 合并 Pull Request | `pr merge --repo <owner/repo> --number <编号> --method merge` 或 `--method squash`。`merge` 在 base 上生成合并提交。`squash` 在 base 上生成一个提交，head 分支不动 |
 | Actions 运行一次同步 | `run --label <标签> [--no-token \| --token <错误的值>] [--sync-py <另一份 sync.py>]` |
 | 只看当前状态 | `state --label <标签>` |
 
@@ -99,6 +106,7 @@ $run = "<同一个 id>"
 - 每个仓库的状态行；
 - 每个 Fork 各分支在运行前后的 sha。默认分支变到一个不包含旧提交的提交时，行尾出现 `<-- DEFAULT BRANCH REWRITTEN`。判断方法是对本地裸仓库跑 `git merge-base --is-ancestor`，看旧 sha 是不是新 sha 的祖先。
 - 本次运行的 API 请求数。
+- 运行结束时的 Pull Request。没有时这一节是 `(none)`。
 
 harness 本身的退出码等于 `sync.py` 的退出码；harness 自己出错时返回 `3`。
 
@@ -106,7 +114,7 @@ harness 本身的退出码等于 `sync.py` 的退出码；harness 自己出错�
 
 ## 行为快照（重构时用）
 
-`scripts/pin.py` 把 14 个固定场景在真实 `sync.py` 上各跑一遍，记成一份规范化文本。每个场景单独 launch 一次运行，4 个并行，结束后自动 cleanup，整体约 3 分钟。场景覆盖：
+`scripts/pin.py` 把 21 个固定场景在真实 `sync.py` 上各跑一遍，记成一份规范化文本。每个场景单独 launch 一次运行，4 个并行，结束后自动 cleanup，整体约 3 分钟。场景覆盖：
 - 试运行，其中冲突那一步退出码是 `1`；
 - Fork 自己有提交时生成合并提交，再运行变为 `up_to_date`；
 - 纯镜像 Fork 快进，目标和上游指向同一个提交；
@@ -120,7 +128,12 @@ harness 本身的退出码等于 `sync.py` 的退出码；harness 自己出错�
 - 停用但访问不到的仓库；
 - 未知键；
 - 字符串布尔值；
-- `max_repos`。
+- `max_repos`；
+- 开发分支从合并前的目标提交创建，并打开审查 Pull Request。已经打开的 Pull Request 保持打开，脚本不另建一个，head 跟着目标分支走；
+- 关闭或 Squash 合并之后，目标分支还停在当时的提交上时，脚本不开新的 Pull Request。目标分支前进后才开下一个；
+- 单个仓库的 `dev_branch` 覆盖全局值。它和目标分支同名时，该仓库失败，其他仓库继续；
+- 试运行只在详情里写出将要创建的开发分支和将要打开的 Pull Request，请求只有 `GET`；
+- 不合法的 `dev_branch` 以退出码 `2` 结束。
 
 ```powershell
 & $py .cursor\skills\verify-fork-sync\scripts\pin.py --out .verify\pin\before.txt
@@ -131,7 +144,8 @@ harness 本身的退出码等于 `sync.py` 的退出码；harness 自己出错�
 记录里每一步都有：
 - `sync.py` 的退出码、stdout、stderr 和任务摘要；
 - 每个 API 请求；
-- 每个分支指向的提交、树和父提交。
+- 每个分支指向的提交、树和父提交；
+- 每个 Pull Request 的编号、状态、head 分支和提交、base 分支、标题。没有 Pull Request 时这一节是 `(none)`。
 
 commit 的 sha 每次运行都不同，所以每个场景里按首次出现的顺序把它们改名成 `C1`、`C2`……树的 sha 只由内容决定，保持原样（大写），合并结果的内容有任何不同都能看出来。同一份代码连跑两次，记录应当完全一致；`--compare` 在两份记录有差异时以退出码 1 结束，并打印差异。要对比改动前的版本，可以用 `git show <提交>:scripts/sync.py` 存一份副本，再传给 `--sync-py`。
 
@@ -179,6 +193,7 @@ commit 的 sha 每次运行都不同，所以每个场景里按首次出现的�
 - Fine-grained PAT 的真实权限、过期，以及跨组织私有上游的访问
 - 真实 `/user/repos` 的分页和授权范围（替身只返回 `alice` 名下的 4 个仓库，只有一页）
 - 分支保护。本地裸仓库接受对目标分支的推送，保护规则拒绝 Token 的情况要在真实 GitHub 上才能看到
+- Pull Request 的批准。替身不检查审查。GitHub 不允许作者批准自己的 Pull Request，脚本开出的 Pull Request 作者是 PAT 所有者
 - 真实网络、限速和超时
 - `ubuntu-latest` 运行器、`actions/setup-python@v5` 和 Python 3.12（本机是 Windows，Python 版本以 `.venv` 为准）
 - workflow 的定时触发和 `concurrency` 分组

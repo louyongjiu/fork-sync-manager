@@ -52,6 +52,7 @@ class Settings:
     discover_forks: bool
     max_repos: int
     exclude: frozenset[str]
+    dev_branch: str | None
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,7 @@ class RepoSpec:
     upstream: str | None = None
     target_branch: str | None = None
     upstream_branch: str | None = None
+    dev_branch: str | None = None
 
 
 @dataclass(frozen=True)
@@ -69,12 +71,27 @@ class ResolvedRepo:
     upstream: str
     target_branch: str
     upstream_branch: str
+    dev_branch: str | None
+
+    def __post_init__(self) -> None:
+        if self.dev_branch is not None and self.dev_branch == self.target_branch:
+            raise SyncError(
+                f"dev_branch {self.dev_branch!r} is the target branch of {self.fork}; "
+                "set target_branch or dev_branch for this repo"
+            )
 
 
 @dataclass(frozen=True)
 class RepoResult:
     status: str
     details: str
+
+
+@dataclass(frozen=True)
+class MergeOutcome:
+    status: str
+    details: str
+    head: str | None = None
 
 
 def log(message: str) -> None:
@@ -228,62 +245,172 @@ def sync_one(repo: RepoSpec, settings: Settings) -> RepoResult:
         upstream=upstream,
         target_branch=target_branch,
         upstream_branch=upstream_branch,
+        dev_branch=repo.dev_branch or settings.dev_branch,
     )
-    return merge_upstream(resolved, settings.dry_run)
+    return sync_repository(resolved, settings.dry_run)
 
 
-def merge_upstream(repo: ResolvedRepo, dry_run: bool) -> RepoResult:
-    with tempfile.TemporaryDirectory(prefix="fork-sync-") as tmp:
-        workdir = Path(tmp)
-        git(["init"], workdir)
-        git(["config", "user.name", "github-actions[bot]"], workdir)
-        git(["config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com"], workdir)
-        git(["remote", "add", "origin", f"https://github.com/{repo.fork}.git"], workdir)
-        git(["remote", "add", "upstream", f"https://github.com/{repo.upstream}.git"], workdir)
+def fetch_target_and_upstream(repo: ResolvedRepo, workdir: Path) -> str:
+    git(["init"], workdir)
+    git(["config", "user.name", "github-actions[bot]"], workdir)
+    git(["config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com"], workdir)
+    git(["remote", "add", "origin", f"https://github.com/{repo.fork}.git"], workdir)
+    git(["remote", "add", "upstream", f"https://github.com/{repo.upstream}.git"], workdir)
 
-        target_ref = f"refs/remotes/origin/{repo.target_branch}"
-        upstream_ref = f"refs/remotes/upstream/{repo.upstream_branch}"
-        git(["fetch", "--no-tags", "origin", f"+refs/heads/{repo.target_branch}:{target_ref}"], workdir)
-        git(["fetch", "--no-tags", "upstream", f"+refs/heads/{repo.upstream_branch}:{upstream_ref}"], workdir)
+    target_ref = f"refs/remotes/origin/{repo.target_branch}"
+    upstream_ref = f"refs/remotes/upstream/{repo.upstream_branch}"
+    git(["fetch", "--no-tags", "origin", f"+refs/heads/{repo.target_branch}:{target_ref}"], workdir)
+    git(["fetch", "--no-tags", "upstream", f"+refs/heads/{repo.upstream_branch}:{upstream_ref}"], workdir)
+    return git(["rev-parse", target_ref], workdir).stdout.strip()
 
-        if is_ancestor(workdir, upstream_ref, target_ref):
-            return RepoResult(
-                "up_to_date", f"{repo.fork} already contains {repo.upstream}@{repo.upstream_branch}"
-            )
 
-        git(["checkout", "-B", repo.target_branch, target_ref], workdir)
-        merge = git(
-            ["merge", "--ff", "--no-edit", upstream_ref],
+def ensure_dev_branch(workdir: Path, dev: str, target_sha: str, dry_run: bool) -> tuple[str, str | None]:
+    listed = git(
+        ["ls-remote", "--exit-code", "--heads", "origin", f"refs/heads/{dev}"],
+        workdir,
+        check=False,
+    )
+    if listed.returncode == 0:
+        dev_ref = f"refs/remotes/origin/{dev}"
+        git(["fetch", "--no-tags", "origin", f"+refs/heads/{dev}:{dev_ref}"], workdir)
+        return git(["rev-parse", dev_ref], workdir).stdout.strip(), None
+    if listed.returncode != 2:
+        detail = (listed.stderr or listed.stdout).strip()
+        raise SyncError(
+            f"git ls-remote --exit-code --heads origin refs/heads/{dev} failed: {detail[-2500:]}"
+        )
+    # The new branch has to point at the pre-merge target. Creating it after the
+    # target push would start the dev branch on commits nobody has reviewed.
+    if dry_run:
+        return target_sha, f"would create {dev} at {target_sha[:12]}"
+    git(["push", "origin", f"{target_sha}:refs/heads/{dev}"], workdir)
+    return target_sha, f"created {dev} at {target_sha[:12]}"
+
+
+def merge_upstream(repo: ResolvedRepo, workdir: Path, dry_run: bool) -> MergeOutcome:
+    target_ref = f"refs/remotes/origin/{repo.target_branch}"
+    upstream_ref = f"refs/remotes/upstream/{repo.upstream_branch}"
+    if is_ancestor(workdir, upstream_ref, target_ref):
+        head = git(["rev-parse", target_ref], workdir).stdout.strip()
+        return MergeOutcome(
+            "up_to_date", f"{repo.fork} already contains {repo.upstream}@{repo.upstream_branch}", head
+        )
+
+    git(["checkout", "-B", repo.target_branch, target_ref], workdir)
+    merge = git(
+        ["merge", "--ff", "--no-edit", upstream_ref],
+        workdir,
+        check=False,
+    )
+    if merge.returncode != 0:
+        conflicts = git(
+            ["diff", "--name-only", "--diff-filter=U"],
             workdir,
             check=False,
-        )
-        if merge.returncode != 0:
-            conflicts = git(
-                ["diff", "--name-only", "--diff-filter=U"],
-                workdir,
-                check=False,
-            ).stdout.strip().splitlines()
-            if conflicts:
-                git(["merge", "--abort"], workdir, check=False)
-                return RepoResult(
-                    "conflict",
-                    f"Conflicting files: {', '.join(conflicts[:30])}. "
-                    f"Merge {repo.upstream}@{repo.upstream_branch} into {repo.target_branch} by hand; "
-                    "the next run then reports up_to_date.",
-                )
-            detail = (merge.stderr or merge.stdout).strip()
-            raise SyncError(f"merge failed (possibly unrelated histories): {detail[-2000:]}")
-
-        head = git(["rev-parse", "HEAD"], workdir).stdout.strip()
-        upstream_head = git(["rev-parse", upstream_ref], workdir).stdout.strip()
-        how = "fast-forward" if head == upstream_head else "merge commit"
-        if dry_run:
-            return RepoResult(
-                "dry_run", f"Would push {how} {head[:12]} to {repo.target_branch}"
+        ).stdout.strip().splitlines()
+        if conflicts:
+            git(["merge", "--abort"], workdir, check=False)
+            return MergeOutcome(
+                "conflict",
+                f"Conflicting files: {', '.join(conflicts[:30])}. "
+                f"Merge {repo.upstream}@{repo.upstream_branch} into {repo.target_branch} by hand; "
+                "the next run then reports up_to_date.",
             )
+        detail = (merge.stderr or merge.stdout).strip()
+        raise SyncError(f"merge failed (possibly unrelated histories): {detail[-2000:]}")
 
-        git(["push", "origin", f"HEAD:refs/heads/{repo.target_branch}"], workdir)
-        return RepoResult("merged", f"pushed {how} {head[:12]} to {repo.target_branch}")
+    head = git(["rev-parse", "HEAD"], workdir).stdout.strip()
+    upstream_head = git(["rev-parse", upstream_ref], workdir).stdout.strip()
+    how = "fast-forward" if head == upstream_head else "merge commit"
+    if dry_run:
+        return MergeOutcome("dry_run", f"Would push {how} {head[:12]} to {repo.target_branch}", head)
+
+    git(["push", "origin", f"HEAD:refs/heads/{repo.target_branch}"], workdir)
+    return MergeOutcome("merged", f"pushed {how} {head[:12]} to {repo.target_branch}", head)
+
+
+def review_pulls(repo: ResolvedRepo) -> list[dict[str, Any]]:
+    owner = repo.fork.split("/", 1)[0]
+    query = urllib.parse.urlencode({
+        "state": "all",
+        "head": f"{owner}:{repo.target_branch}",
+        "base": repo.dev_branch,
+        "per_page": 100,
+    })
+    found = api_request("GET", f"/repos/{repo.fork}/pulls?{query}")
+    if not isinstance(found, list):
+        raise SyncError(f"GitHub /repos/{repo.fork}/pulls returned an unexpected result")
+    return sorted(found, key=lambda pr: pr["number"], reverse=True)
+
+
+def review_body(repo: ResolvedRepo) -> str:
+    target = repo.target_branch
+    source = f"{repo.upstream}@{repo.upstream_branch}"
+    manager = f"https://github.com/{MANAGER_REPO}"
+    return (
+        f"Opened by the manager repository ({manager}).\n"
+        "\n"
+        f"{target} takes {source} automatically. "
+        f"This pull request updates itself when {target} moves.\n"
+        "\n"
+        'Review the diff and CI. Merge with "Create a merge commit". '
+        "A squash merge makes the next pull request show the same commits again.\n"
+    )
+
+
+def open_review_pull(repo: ResolvedRepo) -> dict[str, Any]:
+    owner = repo.fork.split("/", 1)[0]
+    created = api_request("POST", f"/repos/{repo.fork}/pulls", {
+        "title": f"Upstream sync: merge {repo.target_branch} into {repo.dev_branch}",
+        "head": f"{owner}:{repo.target_branch}",
+        "base": repo.dev_branch,
+        "body": review_body(repo),
+    })
+    if not isinstance(created, dict) or "number" not in created:
+        raise SyncError(f"GitHub /repos/{repo.fork}/pulls returned an unexpected result")
+    return created
+
+
+def review_note(repo: ResolvedRepo, workdir: Path, head: str, dev_tip: str, dry_run: bool) -> str:
+    dev = repo.dev_branch
+    target = repo.target_branch
+    if is_ancestor(workdir, head, dev_tip):
+        return f"{dev} already contains {target}"
+    if dry_run:
+        return f"would open a PR from {target} into {dev}"
+    pulls = review_pulls(repo)
+    open_pr = next((pr for pr in pulls if pr.get("state") == "open"), None)
+    if open_pr is not None:
+        return f"PR #{open_pr['number']} from {target} into {dev} is open: {open_pr['html_url']}"
+    closed = next((pr for pr in pulls if pr.get("state") == "closed"), None)
+    if closed is not None and (closed.get("head") or {}).get("sha") == head:
+        return f"PR #{closed['number']} was closed at {head[:12]}; a new PR opens after {target} moves"
+    created = open_review_pull(repo)
+    return f"opened PR #{created['number']} from {target} into {dev}: {created['html_url']}"
+
+
+def sync_repository(repo: ResolvedRepo, dry_run: bool) -> RepoResult:
+    with tempfile.TemporaryDirectory(prefix="fork-sync-") as tmp:
+        workdir = Path(tmp)
+        target_sha = fetch_target_and_upstream(repo, workdir)
+        notes: list[str] = []
+        dev_tip = None
+        if repo.dev_branch is not None:
+            dev_tip, creation_note = ensure_dev_branch(workdir, repo.dev_branch, target_sha, dry_run)
+            if creation_note:
+                notes.append(creation_note)
+        outcome = merge_upstream(repo, workdir, dry_run)
+        if repo.dev_branch is not None and outcome.status in {"merged", "up_to_date", "dry_run"}:
+            if outcome.head is None or dev_tip is None:
+                raise SyncError(f"{outcome.details}; review PR failed: merge finished without a commit")
+            try:
+                notes.append(review_note(repo, workdir, outcome.head, dev_tip, dry_run))
+            except SyncError as exc:
+                if outcome.status == "merged":
+                    raise SyncError(f"{outcome.details}; review PR failed: {exc}") from exc
+                raise
+        details = outcome.details if not notes else f"{outcome.details}; {'; '.join(notes)}"
+        return RepoResult(outcome.status, details)
 
 
 def discover_forks(owner: str) -> list[str]:
@@ -353,6 +480,10 @@ def parse_config(path: Path) -> tuple[Settings, tuple[RepoSpec, ...]]:
 
     dry_run = read_bool(raw_settings, "dry_run", False, "settings.dry_run")
     discover = read_bool(raw_settings, "discover_forks", True, "settings.discover_forks")
+    raw_dev_branch = raw_settings.get("dev_branch")
+    dev_branch = (
+        validate_branch(raw_dev_branch, "settings.dev_branch") if raw_dev_branch is not None else None
+    )
 
     settings = Settings(
         owner=owner,
@@ -360,6 +491,7 @@ def parse_config(path: Path) -> tuple[Settings, tuple[RepoSpec, ...]]:
         discover_forks=discover,
         max_repos=max_repos,
         exclude=frozenset(x.lower() if "/" in x else f"{owner}/{x}".lower() for x in excluded),
+        dev_branch=dev_branch,
     )
 
     specs: list[RepoSpec] = []
@@ -374,12 +506,17 @@ def parse_config(path: Path) -> tuple[Settings, tuple[RepoSpec, ...]]:
         upstream = item.get("upstream")
         target_branch = item.get("target_branch")
         upstream_branch = item.get("upstream_branch")
+        raw_dev_branch = item.get("dev_branch")
         specs.append(RepoSpec(
             fork=fork,
             enabled=enabled,
             upstream=validate_repo_slug(upstream, "upstream") if upstream else None,
             target_branch=validate_branch(target_branch, "target_branch") if target_branch else None,
             upstream_branch=validate_branch(upstream_branch, "upstream_branch") if upstream_branch else None,
+            dev_branch=(
+                validate_branch(raw_dev_branch, f"repos[{fork}].dev_branch")
+                if raw_dev_branch is not None else None
+            ),
         ))
     return settings, tuple(specs)
 

@@ -14,13 +14,19 @@ settings:
   #   - example-disabled-fork
   #   - YOUR_GITHUB_USERNAME/example-old-fork
 
+  # 开发分支。填写后，目标分支的更新通过 Pull Request 进入该分支。
+  # 单个仓库可在下面的 repos 里用同名键覆盖。
+  # dev_branch: develop
+
 # 通常不需要修改下面这一段，程序会读取 Fork 自己的 parent 和默认分支。
 # 特殊情况下，可在这里覆盖上游或分支；也可显式添加非标准镜像仓库。
+# dev_branch 只覆盖这一个 Fork，不填则用 settings.dev_branch。
 repos: []
 # repos:
 #   - fork: YOUR_GITHUB_USERNAME/project-b
 #     upstream: OTHER_OWNER/project-b
 #     target_branch: main
 #     upstream_branch: master
+#     dev_branch: develop
 #   - fork: YOUR_GITHUB_USERNAME/project-c
 #     enabled: false

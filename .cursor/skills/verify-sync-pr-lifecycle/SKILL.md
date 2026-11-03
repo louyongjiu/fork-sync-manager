@@ -27,7 +27,7 @@ description: 用 TLA+ 模型和 TLC 模型检查器，验证 scripts/sync.py 在
 
 模型描述的是 `scripts/sync.py` 里的这些代码：`GitHubApiError`、`api_request`、`is_ancestor`、`remote_branch_exists`、`list_sync_prs`、`ensure_pull_request`、`sync_one`、`ResolvedRepo`、`advance_sync_branch`、`publish_sync`（只描述 `dry_run: false` 的路径）。
 
-- 同步提交：**无**。仓库目前没有任何提交。上次确认时 `scripts/sync.py` 整个文件的 sha256 为 `d60d0ef628c6f5e2…`，确认时间写在 [`coverage.json`](coverage.json) 的 `confirmed_at` 里。
+- 同步提交：`cf84f84`（`refactor(sync): drop restating comments, rename ConfigError and GitReady`）。确认时 `scripts/sync.py` 整个文件的 sha256 为 `d412372b441ccb9c…`，确认时间写在 [`coverage.json`](coverage.json) 的 `confirmed_at` 里。要看覆盖的代码自确认以来改了什么，运行 `git diff cf84f84 -- scripts/sync.py`。
 - 每个函数和类源码的 sha256 也记在 `coverage.json` 里，`check.py` 每次都会对比。
 - 确认模型确实描述了新代码之后，执行 `check.py --confirm`，把 `coverage.json` 更新为当前代码，并记下当时的 `HEAD`。没有读完代码和模型，不要执行 `--confirm`。
 

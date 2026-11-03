@@ -91,7 +91,7 @@ class RepoResult:
 class MergeOutcome:
     status: str
     details: str
-    head: str | None = None
+    head: str
 
 
 def log(message: str) -> None:
@@ -287,13 +287,12 @@ def ensure_dev_branch(workdir: Path, dev: str, target_sha: str, dry_run: bool) -
     return target_sha, f"created {dev} at {target_sha[:12]}"
 
 
-def merge_upstream(repo: ResolvedRepo, workdir: Path, dry_run: bool) -> MergeOutcome:
+def merge_upstream(repo: ResolvedRepo, workdir: Path, target_sha: str, dry_run: bool) -> MergeOutcome:
     target_ref = f"refs/remotes/origin/{repo.target_branch}"
     upstream_ref = f"refs/remotes/upstream/{repo.upstream_branch}"
     if is_ancestor(workdir, upstream_ref, target_ref):
-        head = git(["rev-parse", target_ref], workdir).stdout.strip()
         return MergeOutcome(
-            "up_to_date", f"{repo.fork} already contains {repo.upstream}@{repo.upstream_branch}", head
+            "up_to_date", f"{repo.fork} already contains {repo.upstream}@{repo.upstream_branch}", target_sha
         )
 
     git(["checkout", "-B", repo.target_branch, target_ref], workdir)
@@ -315,6 +314,7 @@ def merge_upstream(repo: ResolvedRepo, workdir: Path, dry_run: bool) -> MergeOut
                 f"Conflicting files: {', '.join(conflicts[:30])}. "
                 f"Merge {repo.upstream}@{repo.upstream_branch} into {repo.target_branch} by hand; "
                 "the next run then reports up_to_date.",
+                target_sha,
             )
         detail = (merge.stderr or merge.stdout).strip()
         raise SyncError(f"merge failed (possibly unrelated histories): {detail[-2000:]}")
@@ -399,10 +399,8 @@ def sync_repository(repo: ResolvedRepo, dry_run: bool) -> RepoResult:
             dev_tip, creation_note = ensure_dev_branch(workdir, repo.dev_branch, target_sha, dry_run)
             if creation_note:
                 notes.append(creation_note)
-        outcome = merge_upstream(repo, workdir, dry_run)
-        if repo.dev_branch is not None and outcome.status in {"merged", "up_to_date", "dry_run"}:
-            if outcome.head is None or dev_tip is None:
-                raise SyncError(f"{outcome.details}; review PR failed: merge finished without a commit")
+        outcome = merge_upstream(repo, workdir, target_sha, dry_run)
+        if dev_tip is not None and outcome.status in {"merged", "up_to_date", "dry_run"}:
             try:
                 notes.append(review_note(repo, workdir, outcome.head, dev_tip, dry_run))
             except SyncError as exc:

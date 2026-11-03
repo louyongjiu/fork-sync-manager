@@ -1,0 +1,28 @@
+# 此配置默认自动发现 GitHub Token 授权的账号内所有 Fork。
+# 第一次部署请先使用 dry_run: true。确认列表正确后改为 false。
+settings:
+  dry_run: true
+  discover_forks: true
+  max_repos: 100
+  sync_branch: automation/upstream-sync
+  pr_title_prefix: "Upstream sync"
+
+  # 如需只使用特定账号，取消下一行注释，并填写账号名。
+  # owner: YOUR_GITHUB_USERNAME
+
+  # 需要排除的仓库（可只写仓库名，也可填写 owner/repo）。
+  exclude: []
+  # exclude:
+  #   - example-disabled-fork
+  #   - YOUR_GITHUB_USERNAME/example-old-fork
+
+# 通常不需要修改下面这一段，程序会读取 Fork 自己的 parent 和默认分支。
+# 特殊情况下，可在这里覆盖上游或分支；也可显式添加非标准镜像仓库。
+repos: []
+# repos:
+#   - fork: YOUR_GITHUB_USERNAME/project-b
+#     upstream: OTHER_OWNER/project-b
+#     target_branch: main
+#     upstream_branch: master
+#   - fork: YOUR_GITHUB_USERNAME/project-c
+#     enabled: false

@@ -1,0 +1,15 @@
+{
+  "sync_commit": null,
+  "confirmed_at": "2026-11-02 18:28",
+  "fingerprints": {
+    "scripts/sync.py": {
+      "GitHubApiError": "54bfc5abbacfbffc684b2f96a50e7593b773d9e920d0392d0ec07ab2c30f06a2",
+      "api_request": "329e92061da68d4094a0d51d77c6c18213946c435918f0bca24d6331b2130f47",
+      "is_ancestor": "cceb77046165b9316e8d795bdd6482e27eacabfb978c0152dc0fef92e39f8090",
+      "remote_branch_exists": "baecccd082189761e203845caae89eb767113992712188c7447f706d5b537efb",
+      "list_sync_prs": "991f547b8033c859917281358611cf71151f480563bea4c1ff373946327ddae5",
+      "ensure_pull_request": "0b17ce2ed35c81a8d5168f2a4e4eaa9ee8c531c1938f9bea9c0180c7f2ee9d9c",
+      "sync_one": "fbfd506c988b31546752e9536f2a7d3eb522dffa1741a1f4fc80a757cc5e67e7"
+    }
+  }
+}

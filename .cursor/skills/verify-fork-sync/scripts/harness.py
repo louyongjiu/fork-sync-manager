@@ -222,7 +222,7 @@ def snapshot(run: dict[str, Any]) -> dict[str, Any]:
         out = git(["--git-dir", str(bare_path(run, record["full_name"])), "for-each-ref",
                    "--format=%(refname:short) %(objectname)", "refs/heads"], env).stdout
         refs[record["full_name"]] = dict(line.split(" ", 1) for line in out.splitlines() if line.strip())
-    return {"refs": refs}
+    return {"refs": refs, "prs": admin(run, "/__verify/prs")}
 
 
 def api_log_lines(run: dict[str, Any]) -> list[str]:
@@ -380,6 +380,64 @@ def cmd_commit(args: argparse.Namespace) -> int:
     return 0
 
 
+def find_pr(run: dict[str, Any], repo: str, number: int) -> dict[str, Any]:
+    for pr in admin(run, "/__verify/prs").get(repo.lower(), []):
+        if pr["number"] == number:
+            return pr
+    raise HarnessError(f"{repo} has no PR #{number}")
+
+
+def print_prs(prs: dict[str, list[dict[str, Any]]]) -> None:
+    if not any(prs.values()):
+        print("(no pull requests)")
+        return
+    for repo, items in sorted(prs.items()):
+        for pr in sorted(items, key=lambda item: item["number"]):
+            merged = " merged" if pr["merged"] else ""
+            sha = (pr["head"]["sha"] or "-")[:12]
+            print(f"{repo} #{pr['number']} {pr['state']}{merged} head={pr['head']['ref']}@{sha} "
+                  f"base={pr['base']['ref']} title={pr['title']!r}")
+
+
+def cmd_pr(args: argparse.Namespace) -> int:
+    run = load_run(args.run)
+    env = base_env(run)
+    if args.action == "list":
+        print_prs(admin(run, "/__verify/prs"))
+        return 0
+    if args.repo is None or args.number is None:
+        raise HarnessError("pr close and pr merge need --repo and --number")
+    record = seed_record(args.repo)
+    repo = record["full_name"]
+    if args.action == "close":
+        admin(run, "/__verify/pr/close", {"repo": repo, "number": args.number})
+    else:
+        pr = find_pr(run, repo, args.number)
+        if pr["state"] != "open":
+            raise HarnessError(f"{repo} #{args.number} is not open")
+        head_ref, base_ref = pr["head"]["ref"], pr["base"]["ref"]
+        bare = bare_path(run, repo)
+        work = work_dir(run, "merge")
+        git(["clone", "--quiet", "--branch", base_ref, str(bare), str(work)], env)
+        if args.method == "merge":
+            merged = git(["merge", "--no-ff", "--no-edit", "-m",
+                          f"Merge pull request #{args.number} from {OWNER}/{head_ref}", f"origin/{head_ref}"],
+                         env, cwd=work, check=False)
+        else:
+            merged = git(["merge", "--squash", f"origin/{head_ref}"], env, cwd=work, check=False)
+            if merged.returncode == 0:
+                merged = git(["commit", "--quiet", "-m", f"{pr['title']} (#{args.number})"], env, cwd=work, check=False)
+        if merged.returncode != 0:
+            remove_tree(work)
+            raise HarnessError(f"PR is not mergeable: {(merged.stderr or merged.stdout).strip()}")
+        git(["push", "--quiet", "origin", f"HEAD:refs/heads/{base_ref}"], env, cwd=work)
+        head_sha = git(["rev-parse", f"origin/{head_ref}"], env, cwd=work).stdout.strip()
+        remove_tree(work)
+        admin(run, "/__verify/pr/mark-merged", {"repo": repo, "number": args.number, "head_sha": head_sha})
+    print_prs({repo.lower(): [find_pr(run, repo, args.number)]})
+    return 0
+
+
 def contains_commit(run: dict[str, Any], slug: str, older: str, newer: str) -> bool:
     result = git(
         ["--git-dir", str(bare_path(run, slug)), "merge-base", "--is-ancestor", older, newer],
@@ -421,6 +479,16 @@ def describe(run: dict[str, Any], before: dict[str, Any], after: dict[str, Any],
                 if tag and a and b and not contains_commit(run, slug, a, b):
                     alarm = "  <-- DEFAULT BRANCH REWRITTEN"
                 lines.append(f"  {slug} {branch}{tag}: {(a or '(absent)')[:12]} -> {(b or '(absent)')[:12]}{alarm}")
+    lines.append("pull requests after the run:")
+    prs = after.get("prs") or {}
+    if not any(prs.values()):
+        lines.append("  (none)")
+    for repo, items in sorted(prs.items()):
+        for pr in sorted(items, key=lambda item: item["number"]):
+            merged = " merged" if pr["merged"] else ""
+            sha = (pr["head"]["sha"] or "-")[:12]
+            lines.append(f"  {repo} #{pr['number']} {pr['state']}{merged} "
+                         f"head={pr['head']['ref']}@{sha} base={pr['base']['ref']}")
     lines.append(f"GitHub API requests this run: {len(requests)}")
     lines.append(f"evidence: {evidence}")
     return "\n".join(lines)
@@ -477,6 +545,7 @@ def cmd_state(args: argparse.Namespace) -> int:
     for slug, refs in state["refs"].items():
         for branch, sha in sorted(refs.items()):
             print(f"{slug} {branch} {sha[:12]}")
+    print_prs(state["prs"])
     print(f"evidence: {step / 'state.json'}")
     return 0
 
@@ -562,6 +631,14 @@ def main() -> int:
     p.add_argument("--text", required=True)
     p.add_argument("--message")
     p.set_defaults(func=cmd_commit)
+
+    p = sub.add_parser("pr", help="list, close, or merge pull requests")
+    p.add_argument("action", choices=["list", "close", "merge"])
+    p.add_argument("--run", required=True)
+    p.add_argument("--repo")
+    p.add_argument("--number", type=int)
+    p.add_argument("--method", choices=["merge", "squash"], default="merge")
+    p.set_defaults(func=cmd_pr)
 
     p = sub.add_parser("run", help="run scripts/sync.py like the workflow step and record evidence")
     p.add_argument("--run", required=True)

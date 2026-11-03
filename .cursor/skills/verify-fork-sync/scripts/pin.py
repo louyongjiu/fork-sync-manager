@@ -149,6 +149,15 @@ def harness(args: list[str]) -> subprocess.CompletedProcess[str]:
                           text=True, encoding="utf-8", errors="replace")
 
 
+def describe_prs(state: dict[str, Any]) -> list[str]:
+    lines = []
+    for repo in sorted(state["prs"]):
+        for p in sorted(state["prs"][repo], key=lambda item: item["number"]):
+            lines.append(f"{repo} #{p['number']} {p['state']} merged={p['merged']} head={p['head']['ref']}@"
+                         f"{p['head']['sha']} base={p['base']['ref']} title={p['title']!r}")
+    return lines
+
+
 def describe_refs(run_id: str, state: dict[str, Any]) -> list[str]:
     lines = []
     scratch = HARNESS_MODULE.scratch_dir(run_id)
@@ -179,7 +188,10 @@ def play(name: str, steps: list[tuple], sync_py: str | None) -> str:
         for index, step in enumerate(steps, start=1):
             kind = step[0]
             if kind != "run":
-                result = harness([kind, "--run", run_id, *step[1]])
+                if kind == "pr":
+                    result = harness(["pr", step[1][0], "--run", run_id, *step[1][1:]])
+                else:
+                    result = harness([kind, "--run", run_id, *step[1]])
                 body = result.stdout if kind != "config" else ""
                 out.append(f"## {index:02d} {kind} {' '.join(step[1])} -> exit {result.returncode}")
                 out += [shas.normalize(line) for line in (body + result.stderr).splitlines() if line.strip()]
@@ -201,6 +213,7 @@ def play(name: str, steps: list[tuple], sync_py: str | None) -> str:
             block += ["-- summary"] + read(step_dir / "step-summary.md").splitlines()
             block += ["-- api"] + read(step_dir / "api-requests.jsonl").splitlines()
             block += ["-- refs"] + describe_refs(run_id, state)
+            block += ["-- prs"] + (describe_prs(state) or ["(none)"])
             out += [shas.normalize(line) for line in block]
     finally:
         harness(["cleanup", "--run", run_id])

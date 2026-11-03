@@ -3,15 +3,25 @@
 
 Repositories live as bare repos under <scratch>/remotes/<owner>/<name>.git; git
 reaches them through the url.insteadOf rule in <scratch>/gitconfig. This server
-answers GET /user/repos and GET /repos/{owner}/{repo}. A missing or wrong token
-gets HTTP 401. Every public request is appended to api-requests.jsonl.
+answers GET /user/repos, GET /repos/{owner}/{repo}, and the pull request reads
+and writes below. A missing or wrong token gets HTTP 401. Every public request
+is appended to api-requests.jsonl.
+
+Pull request rules:
+- an open PR's head.sha follows its head branch; a closed PR keeps the sha it
+  had when it closed;
+- POST /repos/{owner}/{repo}/pulls returns HTTP 422 when an open PR already
+  exists for the same head and base, or when the head has no commits that the
+  base lacks.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import subprocess
 import threading
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -26,17 +36,47 @@ class ApiError(Exception):
         self.errors = errors or []
 
 
+def validation_failed(message: str, field: str = "base") -> ApiError:
+    return ApiError(422, "Validation Failed", [
+        {"resource": "PullRequest", "code": "custom", "field": field, "message": message},
+    ])
+
+
 class World:
     def __init__(self, scratch: Path, token: str, run_id: str, owner: str):
         self.scratch = scratch
+        self.remotes = scratch / "remotes"
         self.token = token
         self.run_id = run_id
         self.owner = owner
         self.lock = threading.Lock()
         seed = json.loads((scratch / "seed.json").read_text(encoding="utf-8"))
         self.repos: dict[str, dict[str, Any]] = {r["full_name"].lower(): r for r in seed["repos"]}
+        self.prs: dict[str, list[dict[str, Any]]] = {}
+        self.clock = datetime(2026, 1, 1, tzinfo=timezone.utc)
         self.log_path = scratch / "api-requests.jsonl"
         self.port = 0
+
+    def bare(self, slug: str) -> Path:
+        owner, name = slug.split("/", 1)
+        return self.remotes / owner / f"{name}.git"
+
+    def git(self, slug: str, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", "--git-dir", str(self.bare(slug)), *args],
+            text=True, capture_output=True,
+        )
+
+    def tip(self, slug: str, branch: str) -> str | None:
+        result = self.git(slug, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}^{{commit}}")
+        return result.stdout.strip() or None
+
+    def is_ancestor(self, slug: str, older: str, newer: str) -> bool:
+        return self.git(slug, "merge-base", "--is-ancestor", older, newer).returncode == 0
+
+    def tick(self) -> str:
+        self.clock += timedelta(minutes=1)
+        return self.clock.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     def repo_json(self, record: dict[str, Any], with_parent: bool) -> dict[str, Any]:
         owner, name = record["full_name"].split("/", 1)
@@ -55,11 +95,39 @@ class World:
             body["parent"] = {"full_name": parent["full_name"], "default_branch": parent["default_branch"]}
         return body
 
+    def head_sha(self, repo: str, pr: dict[str, Any]) -> str | None:
+        if pr["state"] == "open":
+            return self.tip(repo, pr["head_ref"])
+        return pr["frozen_head_sha"]
+
+    def pr_json(self, repo: str, pr: dict[str, Any]) -> dict[str, Any]:
+        owner = repo.split("/", 1)[0]
+        return {
+            "number": pr["number"],
+            "state": pr["state"],
+            "merged": pr["merged"],
+            "merged_at": pr["merged_at"],
+            "title": pr["title"],
+            "body": pr["body"],
+            "created_at": pr["created_at"],
+            "updated_at": pr["updated_at"],
+            "closed_at": pr["closed_at"],
+            "html_url": f"http://127.0.0.1:{self.port}/{repo}/pull/{pr['number']}",
+            "head": {"ref": pr["head_ref"], "label": f"{owner}:{pr['head_ref']}", "sha": self.head_sha(repo, pr)},
+            "base": {"ref": pr["base_ref"]},
+        }
+
     def find_repo(self, slug: str) -> dict[str, Any]:
         record = self.repos.get(slug.lower())
         if not record:
             raise ApiError(404, "Not Found")
         return record
+
+    def find_pr(self, repo: str, number: int) -> dict[str, Any]:
+        for pr in self.prs.get(repo.lower(), []):
+            if pr["number"] == number:
+                return pr
+        raise ApiError(404, "Not Found")
 
     def user_repos(self, query: dict[str, list[str]]) -> list[dict[str, Any]]:
         per_page = int(query.get("per_page", ["30"])[0])
@@ -69,9 +137,86 @@ class World:
         start = (page - 1) * per_page
         return [self.repo_json(r, with_parent=False) for r in owned[start:start + per_page]]
 
-    def admin(self, path: str, _payload: dict[str, Any]) -> Any:
+    def list_pulls(self, repo: str, query: dict[str, list[str]]) -> list[dict[str, Any]]:
+        self.find_repo(repo)
+        state = query.get("state", ["open"])[0]
+        head = query.get("head", [None])[0]
+        base = query.get("base", [None])[0]
+        owner = repo.split("/", 1)[0]
+        result = []
+        for pr in sorted(self.prs.get(repo.lower(), []), key=lambda p: p["number"], reverse=True):
+            if state != "all" and pr["state"] != state:
+                continue
+            if head and head.lower() != f"{owner}:{pr['head_ref']}".lower():
+                continue
+            if base and base != pr["base_ref"]:
+                continue
+            result.append(self.pr_json(repo, pr))
+        return result
+
+    def create_pull(self, repo: str, payload: dict[str, Any]) -> dict[str, Any]:
+        self.find_repo(repo)
+        head = str(payload.get("head", ""))
+        head_ref = head.split(":", 1)[1] if ":" in head else head
+        base_ref = str(payload.get("base", ""))
+        head_tip = self.tip(repo, head_ref)
+        base_tip = self.tip(repo, base_ref)
+        if not head_tip:
+            raise validation_failed(f"head {head!r} is invalid", "head")
+        if not base_tip:
+            raise validation_failed(f"base {base_ref!r} is invalid", "base")
+        for pr in self.prs.get(repo.lower(), []):
+            if pr["state"] == "open" and pr["head_ref"] == head_ref and pr["base_ref"] == base_ref:
+                raise validation_failed(f"A pull request already exists for {head}.", "head")
+        if self.is_ancestor(repo, head_tip, base_tip):
+            raise validation_failed(f"No commits between {base_ref} and {head_ref}", "base")
+        now = self.tick()
+        prs = self.prs.setdefault(repo.lower(), [])
+        pr = {
+            "number": len(prs) + 1,
+            "state": "open",
+            "merged": False,
+            "merged_at": None,
+            "title": payload.get("title", ""),
+            "body": payload.get("body", ""),
+            "head_ref": head_ref,
+            "base_ref": base_ref,
+            "frozen_head_sha": None,
+            "created_at": now,
+            "updated_at": now,
+            "closed_at": None,
+        }
+        prs.append(pr)
+        return self.pr_json(repo, pr)
+
+    def close(self, repo: str, pr: dict[str, Any], merged: bool, head_sha: str | None = None) -> None:
+        now = self.tick()
+        pr["frozen_head_sha"] = head_sha or self.tip(repo, pr["head_ref"])
+        pr["state"] = "closed"
+        pr["closed_at"] = now
+        pr["updated_at"] = now
+        if merged:
+            pr["merged"] = True
+            pr["merged_at"] = now
+
+    def admin(self, path: str, payload: dict[str, Any]) -> Any:
         if path == "/__verify/info":
             return {"run_id": self.run_id, "pid": os.getpid(), "port": self.port, "scratch": str(self.scratch)}
+        if path == "/__verify/prs":
+            return {repo: [self.pr_json(repo, pr) for pr in prs] for repo, prs in self.prs.items()}
+        repo = str(payload.get("repo", ""))
+        if path == "/__verify/pr/close":
+            pr = self.find_pr(repo, int(payload["number"]))
+            if pr["state"] != "open":
+                raise ApiError(409, "pull request is not open")
+            self.close(repo, pr, merged=False)
+            return self.pr_json(repo, pr)
+        if path == "/__verify/pr/mark-merged":
+            pr = self.find_pr(repo, int(payload["number"]))
+            if pr["state"] != "open":
+                raise ApiError(409, "pull request is not open")
+            self.close(repo, pr, merged=True, head_sha=str(payload["head_sha"]))
+            return self.pr_json(repo, pr)
         raise ApiError(404, "Not Found")
 
 
@@ -128,9 +273,17 @@ def make_handler(world: World, server_ref: dict[str, ThreadingHTTPServer]):
                         body = world.user_repos(query)
                     elif method == "GET" and len(parts) == 3 and parts[0] == "repos":
                         body = world.repo_json(world.find_repo(f"{parts[1]}/{parts[2]}"), with_parent=True)
+                    elif len(parts) == 4 and parts[0] == "repos" and parts[3] == "pulls":
+                        repo = f"{parts[1]}/{parts[2]}"
+                        if method == "GET":
+                            body = world.list_pulls(repo, query)
+                        elif method == "POST":
+                            body = world.create_pull(repo, payload)
+                        else:
+                            raise ApiError(404, "Not Found")
                     else:
                         raise ApiError(404, "Not Found")
-                status = 200
+                status = 201 if method == "POST" else 200
             except ApiError as exc:
                 status, body = exc.status, {"message": exc.message, "errors": exc.errors}
             self._log(method, self.path, status, payload)

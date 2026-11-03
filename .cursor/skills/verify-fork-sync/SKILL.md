@@ -87,12 +87,12 @@ $run = "<同一个 id>"
 
 | 用户或外部动作 | 命令 |
 |---|---|
-| 修改管理仓库的 `config/repos.yml` | `config --dry-run true\|false`、`--sync-branch <名>`、`--exclude <名> ...`、`--owner <名>`、`--max-repos <n>`、`--discover true\|false`、`--repos-json '<JSON 列表>'`、`--reset`（重新复制仓库里的版本，可以和其他参数一起用） |
+| 修改管理仓库的 `config/repos.yml` | `config --dry-run true\|false`、`--sync-branch <名>`、`--exclude <名> ...`、`--owner <名>`、`--max-repos <n>`、`--discover true\|false`、`--settings-json '<JSON 对象>'`（原样合并进 `settings:`，用来写字符串布尔值或未知键）、`--repos-json '<JSON 列表>'`、`--reset`（重新复制仓库里的版本，可以和其他参数一起用） |
 | 上游维护者或用户推送提交 | `commit --repo <owner/repo> [--branch <分支>] [--from <已有分支>] --file <路径> --text <整行内容>`（文件整体替换为这一行） |
 | 用户在 GitHub 上关闭 PR | `pr close --repo alice/<repo> --number <n>` |
 | 用户合并 PR | `pr merge --repo alice/<repo> --number <n> --method merge\|squash [--delete-branch]` |
 | 用户删除分支 | `delete-branch --repo alice/<repo> --branch <分支>`（如果这个分支上有打开的 PR，替身会像 GitHub 一样把它关闭） |
-| Actions 运行一次同步 | `run --label <标签> [--no-token] [--sync-py <另一份 sync.py>]` |
+| Actions 运行一次同步 | `run --label <标签> [--no-token \| --token <错误的值>] [--sync-py <另一份 sync.py>]` |
 | 只看当前状态 | `state --label <标签>`、`pr list` |
 
 `run` 的输出包括：
@@ -105,6 +105,37 @@ $run = "<同一个 id>"
 harness 本身的退出码等于 `sync.py` 的退出码；harness 自己出错时返回 `3`。
 
 具体路径怎么走，见 [features/README.md](features/README.md) 和其中每个功能文件。
+
+## 行为快照（重构时用）
+
+`scripts/pin.py` 把 16 个固定场景在真实 `sync.py` 上各跑一遍，记成一份规范化文本。每个场景单独 launch 一次运行，4 个并行，结束后自动 cleanup，整体约 3 分钟。场景覆盖：
+- 试运行；
+- 同步并开 PR 的完整生命周期；
+- 关闭和 squash 合并 PR；
+- 冲突；
+- 排除和停用；
+- 单仓库覆盖；
+- 账号校验；
+- 缺少或错误的 token；
+- `sync_branch` 设为 `main` 或不合法的名字；
+- 停用但访问不到的仓库；
+- 未知键；
+- 字符串布尔值；
+- `max_repos`。
+
+```powershell
+& $py .cursor\skills\verify-fork-sync\scripts\pin.py --out .verify\pin\before.txt
+& $py .cursor\skills\verify-fork-sync\scripts\pin.py --sync-py <另一份 sync.py> --out .verify\pin\after.txt
+& $py .cursor\skills\verify-fork-sync\scripts\pin.py --compare .verify\pin\before.txt .verify\pin\after.txt
+```
+
+记录里每一步都有：
+- `sync.py` 的退出码、stdout、stderr 和任务摘要；
+- 每个 API 请求；
+- 每个分支指向的提交、树和父提交；
+- PR 列表。
+
+commit 的 sha 每次运行都不同，所以每个场景里按首次出现的顺序把它们改名成 `C1`、`C2`……树的 sha 只由内容决定，保持原样（大写），合并结果的内容有任何不同都能看出来。同一份代码连跑两次，记录应当完全一致；`--compare` 在两份记录有差异时以退出码 1 结束，并打印差异。要对比改动前的版本，可以用 `git show <提交>:scripts/sync.py` 存一份副本，再传给 `--sync-py`。
 
 ## Evidence
 

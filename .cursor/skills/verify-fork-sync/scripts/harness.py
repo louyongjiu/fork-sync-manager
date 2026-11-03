@@ -353,6 +353,8 @@ def cmd_config(args: argparse.Namespace) -> int:
         settings["max_repos"] = args.max_repos
     if args.exclude is not None:
         settings["exclude"] = [x for x in args.exclude if x]
+    if args.settings_json is not None:
+        settings.update(json.loads(args.settings_json))
     if args.repos_json is not None:
         data["repos"] = json.loads(args.repos_json)
     write_text(path, yaml.safe_dump(data, sort_keys=False, allow_unicode=True))
@@ -507,7 +509,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         "GITHUB_STEP_SUMMARY": str(step / "step-summary.md"),
     })
     if not args.no_token:
-        env["FORK_SYNC_TOKEN"] = TOKEN
+        env["FORK_SYNC_TOKEN"] = args.token or TOKEN
 
     before = snapshot(run)
     offset = len(api_log_lines(run))
@@ -614,6 +616,7 @@ def main() -> int:
     p.add_argument("--owner")
     p.add_argument("--max-repos", type=int)
     p.add_argument("--exclude", nargs="*")
+    p.add_argument("--settings-json", help="JSON object merged into `settings:` as written, e.g. '{\"dry_run\": \"false\"}'")
     p.add_argument("--repos-json", help="JSON list for the top-level `repos:` overrides")
     p.set_defaults(func=cmd_config)
 
@@ -646,6 +649,7 @@ def main() -> int:
     p.add_argument("--run", required=True)
     p.add_argument("--label", default="sync")
     p.add_argument("--no-token", action="store_true", help="leave FORK_SYNC_TOKEN unset")
+    p.add_argument("--token", help="send this FORK_SYNC_TOKEN instead of the one the fake API accepts")
     p.add_argument("--sync-py", help="run this copy of sync.py instead of scripts/sync.py")
     p.set_defaults(func=cmd_run)
 

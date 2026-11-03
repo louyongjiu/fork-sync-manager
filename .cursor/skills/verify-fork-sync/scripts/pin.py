@@ -1,0 +1,281 @@
+#!/usr/bin/env python3
+"""Record what scripts/sync.py does across a fixed set of user scenarios as
+normalized text, so two versions of sync.py can be compared with a diff.
+
+    .\\.venv\\Scripts\\python.exe .cursor\\skills\\verify-fork-sync\\scripts\\pin.py --out .verify\\pin\\before.txt
+    .\\.venv\\Scripts\\python.exe .cursor\\skills\\verify-fork-sync\\scripts\\pin.py --sync-py <copy> --out .verify\\pin\\after.txt
+    .\\.venv\\Scripts\\python.exe .cursor\\skills\\verify-fork-sync\\scripts\\pin.py --compare .verify\\pin\\before.txt .verify\\pin\\after.txt
+
+Commits carry timestamps, so their shas differ on every run. Each scenario
+renames them C1, C2, ... (c1, c2, ... for short shas never seen in full) in
+order of first appearance. Tree shas depend only on content and stay as they
+are, in upper case.
+"""
+from __future__ import annotations
+
+import argparse
+import difflib
+import importlib.util
+import json
+import re
+import secrets
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import Any
+
+HERE = Path(__file__).resolve().parent
+HARNESS = HERE / "harness.py"
+_spec = importlib.util.spec_from_file_location("verify_fork_sync_harness", HARNESS)
+HARNESS_MODULE = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(HARNESS_MODULE)
+REPO_ROOT = HARNESS_MODULE.REPO_ROOT
+
+LIVE = ("config", ["--dry-run", "false"])
+
+
+def commit(repo: str, file: str, text: str, *extra: str) -> tuple[str, list[str]]:
+    return ("commit", ["--repo", repo, "--file", file, "--text", text, *extra])
+
+
+def run(label: str, *extra: str) -> tuple[str, str, list[str]]:
+    return ("run", label, list(extra))
+
+
+def pr(*args: str) -> tuple[str, list[str]]:
+    return ("pr", list(args))
+
+
+SCENARIOS: dict[str, list[tuple]] = {
+    "dry-run": [
+        run("baseline"),
+        commit("octo/widget", "feature.txt", "upstream feature 1"),
+        run("detect"),
+        commit("octo/widget", "shared.txt", "upstream v2"),
+        commit("alice/widget", "shared.txt", "fork edit"),
+        run("conflict"),
+    ],
+    "widget-lifecycle": [
+        LIVE,
+        commit("octo/widget", "feature.txt", "w1"),
+        run("create"),
+        run("reuse"),
+        commit("octo/widget", "feature.txt", "w2"),
+        run("rebuild"),
+        pr("merge", "--repo", "alice/widget", "--number", "1", "--method", "merge"),
+        run("after-merge"),
+        commit("octo/widget", "feature.txt", "w3"),
+        run("new-pr"),
+        run("reuse-new-pr"),
+    ],
+    "gadget-closed": [
+        LIVE,
+        commit("octo/gadget", "g.txt", "gadget 1"),
+        run("create"),
+        pr("close", "--repo", "alice/gadget", "--number", "1"),
+        run("closed-unchanged"),
+        commit("octo/gadget", "g.txt", "gadget 2"),
+        run("closed-new-upstream"),
+    ],
+    "squash": [
+        LIVE,
+        commit("octo/widget", "feature.txt", "w1"),
+        run("create"),
+        pr("merge", "--repo", "alice/widget", "--number", "1", "--method", "squash", "--delete-branch"),
+        run("after-squash"),
+        pr("merge", "--repo", "alice/widget", "--number", "2", "--method", "merge"),
+        run("after-follow-up"),
+    ],
+    "conflict-live": [
+        LIVE,
+        commit("octo/widget", "shared.txt", "upstream v2"),
+        commit("alice/widget", "shared.txt", "fork edit"),
+        run("conflict"),
+        run("conflict-again"),
+    ],
+    "exclude-disable": [
+        ("config", ["--exclude", "widget", "--repos-json", '[{"fork": "alice/gadget", "enabled": false}]']),
+        run("exclude-disable"),
+    ],
+    "override-branch": [
+        commit("octo/gadget", "r.txt", "release only", "--branch", "release", "--from", "develop"),
+        ("config", ["--dry-run", "false", "--repos-json", '[{"fork": "alice/gadget", "upstream_branch": "release"}]']),
+        run("override"),
+    ],
+    "owner-mismatch": [
+        ("config", ["--repos-json", '[{"fork": "bob/widget"}]']),
+        run("owner-mismatch"),
+    ],
+    "no-token": [run("no-token", "--no-token")],
+    "bad-token": [run("bad-token", "--token", "not-the-token")],
+    "sync-branch-main": [
+        ("config", ["--dry-run", "false", "--sync-branch", "main", "--exclude", "gadget"]),
+        commit("octo/widget", "feature.txt", "w1"),
+        run("sync-branch-main"),
+    ],
+    "sync-branch-invalid": [
+        ("config", ["--sync-branch", "bad..name"]),
+        run("sync-branch-invalid"),
+    ],
+    "disabled-unreachable": [
+        ("config", ["--repos-json", '[{"fork": "alice/ghost", "enabled": false}]']),
+        run("disabled-unreachable"),
+    ],
+    "unknown-keys": [
+        commit("octo/gadget", "r.txt", "release only", "--branch", "release", "--from", "develop"),
+        ("config", ["--settings-json", '{"dryrun": true}',
+                    "--repos-json", '[{"fork": "alice/gadget", "upstream_brnach": "release"}]']),
+        run("unknown-keys"),
+    ],
+    "string-bools": [
+        ("config", ["--settings-json", '{"dry_run": "false"}',
+                    "--repos-json", '[{"fork": "alice/gadget", "enabled": "false"}]']),
+        commit("octo/gadget", "g.txt", "gadget 1"),
+        run("string-bools"),
+    ],
+    "max-repos": [
+        ("config", ["--max-repos", "2"]),
+        run("max-repos-2"),
+        ("config", ["--max-repos", "2", "--exclude", "widget"]),
+        run("max-repos-2-excluding-one"),
+    ],
+}
+
+
+class Shas:
+    def __init__(self) -> None:
+        self.full: dict[str, str] = {}
+        self.short: dict[str, str] = {}
+
+    def name_full(self, sha: str) -> str:
+        if sha not in self.full:
+            self.full[sha] = f"C{len(self.full) + len(self.short) + 1}"
+        return self.full[sha]
+
+    def name_short(self, sha: str) -> str:
+        for full, token in self.full.items():
+            if full.startswith(sha):
+                return token
+        if sha not in self.short:
+            self.short[sha] = f"c{len(self.full) + len(self.short) + 1}"
+        return self.short[sha]
+
+    def normalize(self, text: str) -> str:
+        text = re.sub(r"\b[0-9a-f]{40}\b", lambda m: self.name_full(m.group()), text)
+        text = re.sub(r"\b[0-9a-f]{12}\b", lambda m: self.name_short(m.group()), text)
+        text = re.sub(r"127\.0\.0\.1:\d+", "127.0.0.1:<port>", text)
+        return re.sub(r"[A-Za-z]:\\[^\s'\"]*?fork-sync-[^\s'\"]*", "<tmp>", text)
+
+
+def harness(args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run([sys.executable, str(HARNESS), *args], cwd=str(REPO_ROOT), capture_output=True,
+                          text=True, encoding="utf-8", errors="replace")
+
+
+def describe_refs(run_id: str, state: dict[str, Any]) -> list[str]:
+    lines = []
+    scratch = HARNESS_MODULE.scratch_dir(run_id)
+    for slug in sorted(state["refs"]):
+        owner, name = slug.split("/", 1)
+        bare = scratch / "remotes" / owner / f"{name}.git"
+        for branch, sha in sorted(state["refs"][slug].items()):
+            info = subprocess.run(["git", "--git-dir", str(bare), "log", "-1", "--format=%T %P", sha],
+                                  capture_output=True, text=True).stdout.split()
+            tree, parents = (info[0].upper(), ",".join(info[1:])) if info else ("?", "")
+            lines.append(f"{slug} {branch} = {sha} tree={tree} parents={parents or '-'}")
+    return lines
+
+
+def describe_prs(state: dict[str, Any]) -> list[str]:
+    lines = []
+    for repo in sorted(state["prs"]):
+        for p in state["prs"][repo]:
+            lines.append(f"{repo} #{p['number']} {p['state']} merged={p['merged']} head={p['head']['ref']}@"
+                         f"{p['head']['sha']} base={p['base']['ref']} title={p['title']!r}")
+    return lines
+
+
+def read(path: Path) -> str:
+    return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
+def play(name: str, steps: list[tuple], sync_py: str | None) -> str:
+    run_id = f"pin-{name}-{secrets.token_hex(3)}"
+    shas = Shas()
+    out = [f"### scenario {name}"]
+    launched = harness(["launch", "--run-id", run_id])
+    if "READY" not in launched.stdout:
+        harness(["cleanup", "--run", run_id])
+        return "\n".join(out + ["launch failed", launched.stdout, launched.stderr]) + "\n"
+    try:
+        for index, step in enumerate(steps, start=1):
+            kind = step[0]
+            if kind != "run":
+                args = ["pr", step[1][0], "--run", run_id, *step[1][1:]] if kind == "pr" \
+                    else [kind, "--run", run_id, *step[1]]
+                result = harness(args)
+                body = result.stdout if kind != "config" else ""
+                out.append(f"## {index:02d} {kind} {' '.join(step[1])} -> exit {result.returncode}")
+                out += [shas.normalize(line) for line in (body + result.stderr).splitlines() if line.strip()]
+                continue
+            label, extra = step[1], step[2]
+            args = ["run", "--run", run_id, "--label", label, *extra]
+            if sync_py:
+                args += ["--sync-py", sync_py]
+            result = harness(args)
+            step_dir = Path(result.stdout.rsplit("evidence: ", 1)[1].strip()) if "evidence: " in result.stdout else None
+            out.append(f"## {index:02d} run {label} {' '.join(extra)}".rstrip())
+            if step_dir is None:
+                out += ["harness failed", result.stdout, result.stderr]
+                continue
+            state = json.loads(read(step_dir / "state-after.json"))
+            block = [f"exit: {read(step_dir / 'exit-code.txt').strip()}", "-- stdout"]
+            block += read(step_dir / "stdout.txt").splitlines()
+            block += ["-- stderr"] + read(step_dir / "stderr.txt").splitlines()
+            block += ["-- summary"] + read(step_dir / "step-summary.md").splitlines()
+            block += ["-- api"] + read(step_dir / "api-requests.jsonl").splitlines()
+            block += ["-- refs"] + describe_refs(run_id, state)
+            block += ["-- prs"] + describe_prs(state)
+            out += [shas.normalize(line) for line in block]
+    finally:
+        harness(["cleanup", "--run", run_id])
+    return "\n".join(out) + "\n"
+
+
+def main() -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--sync-py", help="pin this copy of sync.py instead of scripts/sync.py")
+    parser.add_argument("--out", type=Path, help="write the transcript here")
+    parser.add_argument("--only", nargs="*", choices=list(SCENARIOS))
+    parser.add_argument("--compare", nargs=2, type=Path, metavar=("BEFORE", "AFTER"),
+                        help="diff two transcripts; exit 1 when they differ")
+    args = parser.parse_args()
+
+    if args.compare:
+        before, after = ([line for line in p.read_text(encoding="utf-8").splitlines()
+                          if not line.startswith("# pin of ")] for p in args.compare)
+        diff = list(difflib.unified_diff(before, after, str(args.compare[0]), str(args.compare[1]), lineterm=""))
+        print("\n".join(diff) if diff else "transcripts are identical")
+        return 1 if diff else 0
+
+    sync_py = str(Path(args.sync_py).resolve()) if args.sync_py else None
+    names = args.only or list(SCENARIOS)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        parts = list(pool.map(lambda n: play(n, SCENARIOS[n], sync_py), names))
+    source = Path(sync_py) if sync_py else REPO_ROOT / "scripts" / "sync.py"
+    transcript = "".join(parts)
+    header = f"# pin of {source.name} sha256 {HARNESS_MODULE.sha256_file(source)[:16]}\n"
+    if args.out:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(header + transcript, encoding="utf-8", newline="\n")
+        print(f"wrote {args.out} ({len(names)} scenarios, {transcript.count(chr(10))} lines)")
+    else:
+        print(header + transcript, end="")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

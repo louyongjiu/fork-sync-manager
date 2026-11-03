@@ -2,7 +2,7 @@
 
 **不用给每个 Fork 单独维护 GitHub Actions，也不用手动填写上游地址。**
 
-创建一个管理仓库，上传这些文件，配置一次跨仓库 GitHub Token，即可每天自动扫描你账号下授权的 Fork。脚本用普通 Git merge 把上游合进每个 Fork 的目标分支，目标分支默认是 Fork 的默认分支。合并没有冲突时，脚本直接把结果推到目标分支。Fork 没有自己的提交时走快进，推送后目标分支和上游指向同一个提交。合并有冲突时，脚本中止合并，目标分支保持原提交，本次运行失败，由你在本地手工合并（见「处理冲突」）。配置了开发分支时，脚本再开一个 Pull Request，把目标分支送进开发分支，等你审查后合并。自动合入的上游提交落在目标分支上。开发分支要等这个 Pull Request 合并之后才包含这些提交。
+创建一个管理仓库，上传这些文件，配置一次跨仓库 GitHub Token，即可每天自动同步你账号下授权的 Fork。脚本用普通 Git merge 把上游合进每个 Fork 的目标分支并直接推送，目标分支默认是 Fork 的默认分支。合并有冲突时，脚本不推送，本次运行失败，由你在本地手工合并（见「处理冲突」）。配置了开发分支时，脚本再开一个从目标分支到开发分支的 Pull Request。开发分支要等这个 Pull Request 合并之后才包含上游的改动。
 
 ## 初次部署（一次即可）
 
@@ -17,6 +17,34 @@
 5. 第一次运行时保持 `config/repos.yml` 中的 `dry_run: true`。进入管理仓库 `Actions → Daily Upstream Sync → Run workflow` 手动执行，在运行报告里检查选中的 Fork、上游和分支。试运行也会在临时目录里真实合并一次，有冲突的 Fork 记为 `conflict`，这次运行会显示失败。按「处理冲突」解决，或先给它写 `enabled: false`。
 6. 确认正确后将 `dry_run: false`，提交，手动执行一次。以后每天自动运行（workflow 配置为每天 03:17 UTC）。
 
+## 运行流程
+
+workflow 每天 03:17 UTC 执行一次 `python scripts/sync.py`，也可以在 `Actions → Daily Upstream Sync → Run workflow` 手动执行。一次运行按下面的顺序进行：
+
+1. 检查 `FORK_SYNC_TOKEN` 和 `config/repos.yml`。缺少 Token 或配置写错时，以退出码 `2` 结束，不处理任何仓库。
+2. 选出要处理的仓库：自动发现的 Fork 加上 `repos` 里的项，去掉 `exclude`，再检查 `max_repos`。超过 `max_repos` 或一个都没选中时，以退出码 `2` 结束。列出 Fork 时出错，以退出码 `1` 结束。
+3. 逐个处理仓库。一个仓库出错只记为 `failed`，其他仓库照常处理。
+4. 在运行摘要里列出每个仓库的状态和详情。有仓库记为 `failed` 或 `conflict` 时退出码为 `1`，否则为 `0`。
+
+每个仓库在一个临时目录里按这个顺序处理：
+
+1. 配置里写了 `enabled: false` 或者仓库已归档时，记为 `skipped`，到此结束。
+2. 读取 Fork 和上游的仓库信息，确定上游、目标分支、上游分支和开发分支。`dev_branch` 和目标分支同名时记为 `failed`，不执行任何 git 命令。
+3. 拉取目标分支和上游分支。
+4. 配置了开发分支、而 Fork 上还没有这个分支时，用第 3 步拉到的目标分支提交创建它。这一步在推送目标分支之前进行。即使本次运行在推送目标分支之后中断，下一次运行也不会从已经含有未审查上游提交的目标分支创建开发分支。试运行不创建。
+5. 目标分支已经包含上游时，记为 `up_to_date`。否则在目标分支上执行 `git merge --ff --no-edit`：
+   - Fork 没有自己的提交时走快进，推送后目标分支和上游指向同一个提交。Fork 有自己的提交时生成合并提交。
+   - 有冲突时中止合并，记为 `conflict`。目标分支保持原提交，第 6 步跳过。
+   - 试运行不推送，记为 `dry_run`。
+   - 其余情况推送目标分支，记为 `merged`。
+6. 配置了开发分支时，处理审查 Pull Request：
+   - 开发分支已经包含目标分支时，不做任何事。
+   - 试运行只在详情里写明会开 Pull Request，不调用 Pull Request 接口。
+   - 已有打开的 Pull Request 时直接复用。它的来源分支就是目标分支，会自动带上目标分支的新提交。
+   - 最近一个关掉的 Pull Request 停在目标分支当前的提交上时，不开新的。目标分支有新提交之后，脚本才再开一个。
+   - 其他情况新建 Pull Request，标题是 `Upstream sync: merge <目标分支> into <开发分支>`。
+   - 这一步出错时，该仓库记为 `failed`。如果本次已经推送了目标分支，详情里会写明。下一次运行会重新检查，并补开 Pull Request。
+
 ## 自动发现原理
 
 - `GET /user/repos?affiliation=owner&per_page=100&page=N` 分页取得 Token 授权的个人账号仓库。
@@ -28,15 +56,13 @@
 ## 关键安全策略
 
 - 脚本用普通 `git merge` 把上游合进 Fork 的目标分支。Fork 自己的提交留在历史里。
-- Fork 的目标分支上没有自己的提交时，合并走快进。快进之后，目标分支和上游指向同一个提交。
 - 推送命令是 `git push origin HEAD:refs/heads/<目标分支>`。运行期间如果有人把新提交推上同一分支，Git 会因非快进拒绝这次推送，该仓库记为 `failed`。下一次运行会基于新的目标分支重新合并，再推一次。
 - 合并冲突时，脚本执行 `git merge --abort`。远程目标分支保持这次运行开始时的提交。该仓库记为 `conflict`，本次运行以退出码 1 结束。
 - 如果某个 Fork 启用了 Actions，并且它的某个 workflow 的 `on: push` 覆盖目标分支，脚本的推送会触发那个 workflow，例如部署任务。
 - 目标分支的保护规则不允许这个 Token 推送时，GitHub 拒绝推送，该仓库记为 `failed`。
 - 没有冲突只说明 Git 能自动合并文本，不说明合并后的代码能构建和运行。要发现这类问题，在 Fork 上配置 CI。
-- 脚本只在开发分支还不存在时创建它。创建用的提交是本次合并前从远程取到的目标分支。之后脚本不把新提交直接推上开发分支。开发分支上的新提交来自这个 Pull Request，或者来自你自己的推送。
-- 合并这个 Pull Request 时选择 **Create a merge commit**。Squash 合并会让下一次 Pull Request 再次列出同样的提交。
-- 关掉的 Pull Request 保持关闭。目标分支出现新提交之后，脚本才再开一个。
+- 脚本只在开发分支还不存在时创建它，之后不把新提交直接推上开发分支。开发分支上的新提交来自审查 Pull Request，或者来自你自己的推送。
+- 合并审查 Pull Request 时选择 **Create a merge commit**。Squash 合并会让下一次 Pull Request 再次列出同样的提交。
 - 要让别人先看过再合并，给开发分支加上需要审查的保护规则。GitHub 不允许 Pull Request 的作者批准自己的 Pull Request。这些 Pull Request 的作者是这个 PAT 的所有者，所以要求批准时需要另一位开发者，或者由管理员绕过。
 - 要暂停某个 Fork，在 `repos` 里给它写 `enabled: false`，之后的运行把它记为 `skipped`。处理完后删掉这一项，或改回 `enabled: true`。
 - 两边历史不相关时，Git 无法做普通 merge，该仓库记为 `failed`。这时检查 `upstream` 是否指向正确的源仓库。
@@ -76,11 +102,9 @@ repos:
 
 `repos` 的每一项只接受 `fork`、`enabled`、`upstream`、`target_branch`、`upstream_branch`、`dev_branch`。`fork` 必须属于 `settings.owner` 这个账号。`enabled` 必须写 `true` 或 `false`。`enabled: false` 的仓库报 `skipped`，不调用 GitHub API。`upstream` 必须是 `owner/repo` 格式，分支名必须是合法的 Git 分支名。
 
-`settings.dev_branch` 对每个 Fork 生效。某一项里的 `dev_branch` 只覆盖那一个 Fork。两处都不写时，脚本只更新目标分支。
+`settings.dev_branch` 对每个 Fork 生效。某一项里的 `dev_branch` 只覆盖那一个 Fork。两处都不写时，脚本只更新目标分支，不处理审查 Pull Request。
 
-开发分支在 Fork 上还不存在时，脚本用本次合并前从远程取到的目标分支提交创建它。试运行不创建，详情里写 `would create <开发分支> at <12 位提交>`。
-
-`dev_branch` 和这个 Fork 的目标分支同名时，该仓库记为 `failed`。详情是 `dev_branch '<名字>' is the target branch of <fork>; set target_branch or dev_branch for this repo`。脚本在对这个仓库执行任何 git 命令之前就停下来。其他仓库照常处理。
+`dev_branch` 和这个 Fork 的目标分支同名时，该仓库记为 `failed`，详情是 `dev_branch '<名字>' is the target branch of <fork>; set target_branch or dev_branch for this repo`。其他仓库照常处理。
 
 可以在 `repos` 显式加入不是 Fork 的镜像仓库。这类仓库没有 GitHub parent，必须写 `upstream`，否则该仓库记为 `failed`。
 
@@ -94,10 +118,19 @@ repos:
 - `up_to_date`：目标分支已经包含该上游提交。
 - `conflict`：合并发生冲突。详情列出冲突文件，并说明要在本地把上游合进目标分支。远程目标分支保持原提交。这个状态会使本次 Actions Job 失败。
 - `skipped`：仓库已归档，或配置里写了 `enabled: false`。
-- `failed`：权限不足、网络或 API 错误、仓库不存在、找不到上游、两边历史不相关，或推送被拒。推送被拒的常见原因是保护规则、Token 缺少 `Workflows` 权限，或运行期间目标分支被别人更新。这个状态会使本次 Actions Job 失败。
+- `failed`：权限不足、网络或 API 错误、仓库不存在、找不到上游、两边历史不相关、开发分支和目标分支同名、建审查 Pull Request 出错，或推送被拒。推送被拒的常见原因是保护规则、Token 缺少 `Workflows` 权限，或运行期间目标分支被别人更新。这个状态会使本次 Actions Job 失败。
 - `dry_run`：在临时目录里完成合并，不推送。详情写明将要推到目标分支的方式、提交和分支名。试运行遇到冲突时记为 `conflict`，不记为 `dry_run`。
 
-配置了开发分支时，详情在上面的结果后面用 `; ` 接上这次对开发分支做的事。例如 `pushed fast-forward 0123456789ab to main; created develop at abcdefabcdef; opened PR #1 from main into develop: https://github.com/YOUR_NAME/REPO/pull/1`。目标分支没有新提交、已有的 Pull Request 还开着时，详情类似 `YOUR_NAME/REPO already contains SOURCE_OWNER/REPO@main; PR #1 from main into develop is open: https://github.com/YOUR_NAME/REPO/pull/1`。开发分支已经包含目标分支时，详情类似 `YOUR_NAME/REPO already contains SOURCE_OWNER/REPO@main; develop already contains main`。关掉的 Pull Request 如果还指着目标分支当前的提交，详情里会写 `PR #1 was closed at abcdefabcdef; a new PR opens after main moves`。试运行的详情类似 `Would push fast-forward 0123456789ab to main; would create develop at abcdefabcdef; would open a PR from main into develop`。试运行不调用 Pull Request 接口，也不创建开发分支。
+配置了开发分支时，详情在上面的结果后面用 `; ` 接上开发分支的处理结果。下面以目标分支 `main`、开发分支 `develop` 为例：
+
+- `created develop at abcdefabcdef`：本次创建了开发分支。
+- `opened PR #1 from main into develop: <链接>`：本次新建了审查 Pull Request。
+- `PR #1 from main into develop is open: <链接>`：已有的审查 Pull Request 还开着，本次没有改动它。
+- `develop already contains main`：开发分支已经包含目标分支，不需要 Pull Request。
+- `PR #1 was closed at abcdefabcdef; a new PR opens after main moves`：最近一个审查 Pull Request 已关闭，目标分支还停在关闭时的提交上。
+- `would create develop at abcdefabcdef`、`would open a PR from main into develop`：试运行时说明会做什么。
+
+一条完整的详情例如 `pushed fast-forward 0123456789ab to main; created develop at abcdefabcdef; opened PR #1 from main into develop: https://github.com/YOUR_NAME/REPO/pull/1`。
 
 退出码 `0` 表示没有任何仓库记为 `failed` 或 `conflict`。`1` 表示有仓库记为 `failed` 或 `conflict`，或列出 Fork 时出错，例如网络、权限或 API 返回的数据不对。`2` 表示缺少 `FORK_SYNC_TOKEN`，或配置错误。
 
@@ -123,7 +156,7 @@ git push origin main
 
 下一次运行把这个仓库记为 `up_to_date`。如果上游在这期间又有新提交并且能干净合并，就记为 `merged`。
 
-目标分支和开发分支如果合不到一起，冲突出现在这个 Pull Request 上，不记成同步任务的 `conflict`。可以在 GitHub 的冲突编辑器里改，也可以在本地把目标分支合并进开发分支再推送。
+目标分支和开发分支如果合不到一起，冲突出现在审查 Pull Request 上，不记成同步任务的 `conflict`。可以在 GitHub 的冲突编辑器里改，也可以在本地把目标分支合并进开发分支再推送。
 
 ## 其他
 

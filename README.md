@@ -51,11 +51,13 @@ settings:
 repos: []
 ```
 
+`settings` 只接受上面这些键，外加可选的 `owner`。`dry_run` 和 `discover_forks` 必须写 `true` 或 `false`，`pr_title_prefix` 必须是字符串。
+
 `sync_branch` 必须与每个 Fork 的默认分支（或下面覆盖的 `target_branch`）不同名。同名时该 Fork 报 `failed`，不推送任何分支。
 
-只同步某些 Fork：在 `settings.exclude` 列出其他仓库，或只在 PAT 中授权指定仓库。
+只同步某些 Fork：在 `settings.exclude` 列出其他仓库，或只在 PAT 中授权指定仓库。`max_repos` 限制的是去掉 `exclude` 之后最终要处理的仓库数。
 
-针对某个 Fork 覆盖上游/分支：
+针对某个 Fork 覆盖上游/分支，或停用它：
 
 ```yaml
 repos:
@@ -63,9 +65,15 @@ repos:
     upstream: SOURCE_OWNER/special-upstream
     target_branch: main
     upstream_branch: develop
+  - fork: YOUR_NAME/paused-fork
+    enabled: false
 ```
 
+`repos` 的每一项只接受 `fork`、`enabled`、`upstream`、`target_branch`、`upstream_branch`。`enabled` 必须写 `true` 或 `false`；`enabled: false` 的仓库报 `skipped`，不调用 GitHub API。`upstream` 必须是 `owner/repo` 格式，分支名必须是合法的 Git 分支名。
+
 可以在 `repos` 显式加入非 Fork 镜像仓库，但它必须有可访问的上游地址且归属于同一个账号。
+
+任务启动时先检查整个配置文件，再调用 GitHub API。写错的键名（例如 `dryrun`、`upstream_brnach`）、写成字符串的 `"false"`、不合法的 `sync_branch` 或分支名，都会让任务以退出码 `2` 结束，不处理任何仓库。去掉 `exclude` 之后仓库数超过 `max_repos`，或一个仓库都没有选中，也以退出码 `2` 结束。
 
 ## 每日结果
 
@@ -74,9 +82,11 @@ repos:
 - `updated` — 已推送同步分支并新建、更新或重新打开 PR（或复用现有分支更新 PR）
 - `up_to_date` — 你的默认分支已经包含该上游提交
 - `conflict` — 本轮发生冲突，报告列出冲突文件，没有推送默认分支
-- `skipped` — 归档、禁用，或相应 PR 被用户关闭且没有新提交
+- `skipped` — 归档、在配置里写了 `enabled: false`，或相应 PR 被用户关闭且没有新提交
 - `failed` — 权限、网络、仓库不存在或 API 错误；会使本次 Actions Job 失败
 - `dry_run` — 只做检测、尝试合并，不推送/创建 PR
+
+退出码：`0` 表示没有仓库失败；`1` 表示有仓库失败，或列出 Fork 时出错（网络、权限、API 返回的数据不对）；`2` 表示缺少 `FORK_SYNC_TOKEN` 或配置错误。
 
 ## 其他
 

@@ -12,7 +12,7 @@ import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +45,34 @@ class GitHubApiError(SyncError):
     def __init__(self, message: str, status: int):
         super().__init__(message)
         self.status = status
+
+
+class ConfigError(SyncError):
+    """The selected repositories are empty or over max_repos; main exits 2, not 1."""
+
+
+@dataclass(frozen=True)
+class Settings:
+    """Validated `settings:` of config/repos.yml. Field names are the allowed keys."""
+
+    owner: str
+    dry_run: bool
+    discover_forks: bool
+    max_repos: int
+    sync_branch: str
+    pr_title_prefix: str
+    exclude: frozenset[str]
+
+
+@dataclass(frozen=True)
+class RepoSpec:
+    """One validated `repos:` entry; None means GitHub supplies it. Field names are the allowed keys."""
+
+    fork: str
+    enabled: bool = True
+    upstream: str | None = None
+    target_branch: str | None = None
+    upstream_branch: str | None = None
 
 
 @dataclass(frozen=True)
@@ -289,58 +317,43 @@ def append_summary(rows: list[dict[str, str]], counts: dict[str, int]) -> None:
         handle.write("\n".join(lines) + "\n")
 
 
-def sync_one(
-    item: dict[str, Any],
-    settings: dict[str, Any],
-    dry_run: bool,
-) -> RepoResult:
-    fork = item["fork"]
-    fork_meta = repo_metadata(fork)
-
-    if not item.get("enabled", True):
+def sync_one(repo: RepoSpec, settings: Settings) -> RepoResult:
+    if not repo.enabled:
         return RepoResult("skipped", "disabled in config")
+    fork_meta = repo_metadata(repo.fork)
     if fork_meta.get("archived"):
         return RepoResult("skipped", "Fork repository is archived")
 
-    upstream = item.get("upstream")
-    if upstream:
-        upstream = validate_repo_slug(upstream, "upstream")
-    else:
+    upstream = repo.upstream
+    if upstream is None:
         parent = fork_meta.get("parent") or {}
         upstream = parent.get("full_name")
         if not upstream:
             raise SyncError(
-                f"{fork} has no GitHub parent metadata; add `upstream: owner/repo` in config"
+                f"{repo.fork} has no GitHub parent metadata; add `upstream: owner/repo` in config"
             )
         upstream = validate_repo_slug(upstream, "detected upstream")
 
     upstream_meta = repo_metadata(upstream)
 
-    target_branch = validate_branch(
-        item.get("target_branch") or fork_meta.get("default_branch") or "",
-        "target_branch",
+    target_branch = repo.target_branch or validate_branch(
+        fork_meta.get("default_branch") or "", "target_branch"
     )
-    upstream_branch = validate_branch(
-        item.get("upstream_branch") or upstream_meta.get("default_branch") or "",
-        "upstream_branch",
+    upstream_branch = repo.upstream_branch or validate_branch(
+        upstream_meta.get("default_branch") or "", "upstream_branch"
     )
-    sync_branch = validate_branch(
-        settings.get("sync_branch", "automation/upstream-sync"),
-        "sync_branch",
-    )
-    title_prefix = settings.get("pr_title_prefix", "Upstream sync")
-    repo = ResolvedRepo(
-        fork=fork,
+    resolved = ResolvedRepo(
+        fork=repo.fork,
         upstream=upstream,
         target_branch=target_branch,
         upstream_branch=upstream_branch,
-        sync_branch=sync_branch,
-        title=f"{title_prefix}: {upstream} ({upstream_branch})",
+        sync_branch=settings.sync_branch,
+        title=f"{settings.pr_title_prefix}: {upstream} ({upstream_branch})",
     )
-    ready = advance_sync_branch(repo, dry_run)
+    ready = advance_sync_branch(resolved, settings.dry_run)
     if isinstance(ready, RepoResult):
         return ready
-    return publish_sync(repo, ready)
+    return publish_sync(resolved, ready)
 
 
 def advance_sync_branch(repo: ResolvedRepo, dry_run: bool) -> RepoResult | GitReady:
@@ -457,13 +470,13 @@ Please review the diff and CI checks before merging.
     return RepoResult("updated", f"{action} sync branch; {pr_status}{url_text}")
 
 
-def discover_forks(owner: str, max_repos: int) -> list[dict[str, Any]]:
+def discover_forks(owner: str) -> list[str]:
     """Find permitted Forks owned by the manager account, paginating all results.
 
     With a fine-grained PAT, this API generally returns repositories selected
     when the token was created. Only enabled Forks owned by `owner` are used.
     """
-    discovered: list[dict[str, Any]] = []
+    discovered: list[str] = []
     page = 1
     while True:
         query = urllib.parse.urlencode({
@@ -475,12 +488,7 @@ def discover_forks(owner: str, max_repos: int) -> list[dict[str, Any]]:
         for repo in batch:
             repo_owner = ((repo.get("owner") or {}).get("login") or "")
             if repo.get("fork") and repo_owner.lower() == owner.lower():
-                discovered.append({"fork": validate_repo_slug(repo.get("full_name"), "fork")})
-                if len(discovered) > max_repos:
-                    raise SyncError(
-                        f"Found more than max_repos={max_repos} Forks. "
-                        "Increase settings.max_repos only after checking your Token's repository access."
-                    )
+                discovered.append(validate_repo_slug(repo.get("full_name"), "fork"))
         if len(batch) < 100:
             break
         page += 1
@@ -489,70 +497,111 @@ def discover_forks(owner: str, max_repos: int) -> list[dict[str, Any]]:
     return discovered
 
 
-def load_config() -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    if not CONFIG_FILE.exists():
-        raise SyncError(f"Config file not found: {CONFIG_FILE}")
-    with CONFIG_FILE.open("r", encoding="utf-8") as handle:
+def reject_unknown_keys(raw: dict[Any, Any], cls: type, where: str) -> None:
+    unknown = set(raw) - {field.name for field in fields(cls)}
+    if unknown:
+        raise SyncError(f"Unknown keys in {where}: {', '.join(sorted(map(str, unknown)))}")
+
+
+def read_bool(raw: dict[Any, Any], key: str, default: bool, name: str) -> bool:
+    value = raw.get(key, default)
+    if not isinstance(value, bool):
+        raise SyncError(f"{name} must be true or false; got: {value!r}")
+    return value
+
+
+def parse_config(path: Path) -> tuple[Settings, tuple[RepoSpec, ...]]:
+    if not path.exists():
+        raise SyncError(f"Config file not found: {path}")
+    with path.open("r", encoding="utf-8") as handle:
         config = yaml.safe_load(handle) or {}
     if not isinstance(config, dict):
         raise SyncError("config/repos.yml must contain a YAML object")
 
-    settings = config.get("settings") or {}
-    configured_repos = config.get("repos") or []
-    if not isinstance(settings, dict):
+    raw_settings = config.get("settings") or {}
+    raw_repos = config.get("repos") or []
+    if not isinstance(raw_settings, dict):
         raise SyncError("settings must be a YAML object")
-    if not isinstance(configured_repos, list):
+    if not isinstance(raw_repos, list):
         raise SyncError("repos must be a YAML list")
+    reject_unknown_keys(raw_settings, Settings, "settings")
 
-    owner = (settings.get("owner") or os.environ.get("GITHUB_REPOSITORY_OWNER") or
+    owner = (raw_settings.get("owner") or os.environ.get("GITHUB_REPOSITORY_OWNER") or
              MANAGER_REPO.split("/", 1)[0])
     if not isinstance(owner, str) or not re.fullmatch(r"[A-Za-z0-9-]+", owner):
         raise SyncError(f"Invalid settings.owner: {owner!r}")
 
-    max_repos = settings.get("max_repos", 100)
+    max_repos = raw_settings.get("max_repos", 100)
     if not isinstance(max_repos, int) or isinstance(max_repos, bool) or not (1 <= max_repos <= 1000):
         raise SyncError("settings.max_repos must be an integer from 1 to 1000")
 
-    excluded = settings.get("exclude") or []
+    excluded = raw_settings.get("exclude") or []
     if not isinstance(excluded, list) or any(not isinstance(x, str) for x in excluded):
         raise SyncError("settings.exclude must be a list of repository names")
-    exclude_slugs = {
-        x.lower() if "/" in x else f"{owner}/{x}".lower()
-        for x in excluded
-    }
 
-    # Additional entries can override the discovered Fork's upstream and branch.
-    # They also allow explicitly including repositories without fork metadata.
-    override_map: dict[str, dict[str, Any]] = {}
-    for item in configured_repos:
+    dry_run = read_bool(raw_settings, "dry_run", False, "settings.dry_run")
+    discover = read_bool(raw_settings, "discover_forks", True, "settings.discover_forks")
+    sync_branch = validate_branch(
+        raw_settings.get("sync_branch", "automation/upstream-sync"), "settings.sync_branch"
+    )
+    title_prefix = raw_settings.get("pr_title_prefix", "Upstream sync")
+    if not isinstance(title_prefix, str):
+        raise SyncError(f"settings.pr_title_prefix must be a string; got: {title_prefix!r}")
+
+    settings = Settings(
+        owner=owner,
+        dry_run=dry_run,
+        discover_forks=discover,
+        max_repos=max_repos,
+        sync_branch=sync_branch,
+        pr_title_prefix=title_prefix,
+        exclude=frozenset(x.lower() if "/" in x else f"{owner}/{x}".lower() for x in excluded),
+    )
+
+    specs: list[RepoSpec] = []
+    for item in raw_repos:
         if not isinstance(item, dict):
             raise SyncError("Each repos entry must be a YAML object")
-        slug = validate_repo_slug(item.get("fork"), "fork")
-        if slug.split("/", 1)[0].lower() != owner.lower():
-            raise SyncError(f"Configured repository does not belong to {owner}: {slug}")
-        override_map[slug.lower()] = dict(item)
+        fork = validate_repo_slug(item.get("fork"), "fork")
+        if fork.split("/", 1)[0].lower() != owner.lower():
+            raise SyncError(f"Configured repository does not belong to {owner}: {fork}")
+        reject_unknown_keys(item, RepoSpec, f"repos[{fork}]")
+        enabled = read_bool(item, "enabled", True, f"repos[{fork}].enabled")
+        upstream = item.get("upstream")
+        target_branch = item.get("target_branch")
+        upstream_branch = item.get("upstream_branch")
+        specs.append(RepoSpec(
+            fork=fork,
+            enabled=enabled,
+            upstream=validate_repo_slug(upstream, "upstream") if upstream else None,
+            target_branch=validate_branch(target_branch, "target_branch") if target_branch else None,
+            upstream_branch=validate_branch(upstream_branch, "upstream_branch") if upstream_branch else None,
+        ))
+    return settings, tuple(specs)
 
-    selected: dict[str, dict[str, Any]] = {}
-    if settings.get("discover_forks", True):
-        for item in discover_forks(owner, max_repos):
-            slug = item["fork"].lower()
-            if slug not in exclude_slugs:
-                selected[slug] = item
 
-    for slug, item in override_map.items():
-        if slug not in exclude_slugs:
-            selected[slug] = {**selected.get(slug, {}), **item}
+def select_repos(settings: Settings, specs: tuple[RepoSpec, ...]) -> tuple[RepoSpec, ...]:
+    selected: dict[str, RepoSpec] = {}
+    if settings.discover_forks:
+        for fork in discover_forks(settings.owner):
+            selected[fork.lower()] = RepoSpec(fork=fork)
+    # An entry overrides the discovered fork with the same slug, or adds a repository
+    # that has no fork metadata.
+    for spec in specs:
+        selected[spec.fork.lower()] = spec
+    repos = tuple(spec for slug, spec in selected.items() if slug not in settings.exclude)
 
-    result = list(selected.values())
-    if len(result) > max_repos:
-        raise SyncError(f"Found {len(result)} repositories; max_repos={max_repos}")
-    if not result:
-        raise SyncError(
-            f"No Forks found for {owner}. Check FORK_SYNC_TOKEN repository access, "
+    if len(repos) > settings.max_repos:
+        raise ConfigError(
+            f"Found {len(repos)} repositories; max_repos={settings.max_repos}. "
+            "Increase settings.max_repos only after checking your Token's repository access."
+        )
+    if not repos:
+        raise ConfigError(
+            f"No Forks found for {settings.owner}. Check FORK_SYNC_TOKEN repository access, "
             "settings.owner, and settings.discover_forks."
         )
-    log(f"Discovered {len(result)} repositories under {owner}")
-    return settings, result
+    return repos
 
 
 def main() -> int:
@@ -561,30 +610,40 @@ def main() -> int:
         return 2
 
     try:
-        settings, repos = load_config()
+        settings, specs = parse_config(CONFIG_FILE)
     except Exception as exc:
         log(f"ERROR: {exc}")
         if not isinstance(exc, SyncError):
             log(traceback.format_exc().rstrip())
         return 2
 
-    dry_run = bool(settings.get("dry_run", False))
-    log(f"Starting sync for {len(repos)} configured repositories; dry_run={dry_run}")
+    try:
+        repos = select_repos(settings, specs)
+    except ConfigError as exc:
+        log(f"ERROR: {exc}")
+        return 2
+    except Exception as exc:
+        log(f"ERROR: {exc}")
+        if not isinstance(exc, SyncError):
+            log(traceback.format_exc().rstrip())
+        return 1
+
+    log(f"Discovered {len(repos)} repositories under {settings.owner}")
+    log(f"Starting sync for {len(repos)} configured repositories; dry_run={settings.dry_run}")
 
     rows: list[dict[str, str]] = []
     counts = dict.fromkeys(STATUS_LABELS, 0)
 
-    for index, item in enumerate(repos, start=1):
-        repo_name = item["fork"]
-        log(f"\n[{index}/{len(repos)}] Processing {repo_name}")
+    for index, repo in enumerate(repos, start=1):
+        log(f"\n[{index}/{len(repos)}] Processing {repo.fork}")
         try:
-            result = sync_one(item, settings, dry_run)
+            result = sync_one(repo, settings)
             counts[result.status] += 1
-            rows.append({"repo": repo_name, "status": result.status, "details": result.details})
+            rows.append({"repo": repo.fork, "status": result.status, "details": result.details})
             log(f"{result.status.upper()}: {result.details}")
         except Exception as exc:
             counts["failed"] += 1
-            rows.append({"repo": repo_name, "status": "failed", "details": str(exc)})
+            rows.append({"repo": repo.fork, "status": "failed", "details": str(exc)})
             log(f"FAILED: {exc}")
             if not isinstance(exc, SyncError):
                 log(traceback.format_exc().rstrip())

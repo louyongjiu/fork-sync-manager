@@ -1,6 +1,6 @@
 # Fork Sync Manager — 自动发现 Fork 的集中管理版
 
-**不用维护 50 份 GitHub Actions，也不用手动填写 50 个上游地址。**
+**不用给每个 Fork 单独维护 GitHub Actions，也不用手动填写上游地址。**
 
 创建一个管理仓库，上传这些文件，配置一次跨仓库 GitHub Token，即可每天自动扫描你账号下授权的 Fork。脚本用普通 Git merge 把上游合进每个 Fork 的目标分支，目标分支默认是 Fork 的默认分支。合并没有冲突时，脚本直接把结果推到目标分支。Fork 没有自己的提交时走快进，推送后目标分支和上游指向同一个提交。合并有冲突时，脚本中止合并，目标分支保持原提交，本次运行失败，由你在本地手工合并（见「处理冲突」）。
 
@@ -10,7 +10,7 @@
 2. 把本项目的文件推送或上传到这个仓库的默认分支。`.github`、`config`、`scripts` 目录必须位于仓库根目录，因为 GitHub 只运行默认分支里 `.github/workflows/` 下的定时任务。
 3. 创建 [GitHub Fine-grained Personal Access Token](https://github.com/settings/personal-access-tokens/new)：
    - `Resource owner`：你的 GitHub 个人账号。
-   - `Repository access`：选择需要同步的所有 Fork 仓库。首次部署先只选 1–2 个测试仓库，确认后再逐步扩大到 50 个。
+   - `Repository access`：选择需要同步的所有 Fork 仓库。首次部署先只选 1–2 个测试仓库，确认后再逐步加入其他 Fork。
    - `Repository permissions`：`Contents: Read and write`、`Workflows: Read and write`、`Metadata: Read-only`。上游提交经常新增或修改 `.github/workflows/` 里的文件。Token 缺少 `Workflows: Read and write` 时，GitHub 会拒绝推送这类提交。
    - 如果私有 upstream 不属于此账号，请确认 Token 对这些上游是否有访问权限；跨组织私有 upstream 可能需要改用 GitHub App 认证方案。
 4. 在**管理仓库** `Settings → Secrets and variables → Actions → New repository secret` 增加 `FORK_SYNC_TOKEN`，值填刚才的 Token；**不要把 Token 放进文件**。

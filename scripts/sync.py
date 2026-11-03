@@ -24,6 +24,14 @@ API_BASE = os.environ.get("GITHUB_API_URL", "https://api.github.com").rstrip("/"
 TOKEN = os.environ.get("FORK_SYNC_TOKEN", "").strip()
 MANAGER_REPO = os.environ.get("GITHUB_REPOSITORY", "YOUR_GITHUB_USERNAME/fork-sync-manager")
 API_VERSION = "2022-11-28"
+STATUS_LABELS: dict[str, str] = {
+    "updated": "Updated / PR",
+    "up_to_date": "Up to date",
+    "conflict": "Conflicts",
+    "skipped": "Skipped",
+    "failed": "Failed",
+    "dry_run": "Dry run",
+}
 
 metadata_cache: dict[str, dict[str, Any]] = {}
 
@@ -231,11 +239,10 @@ def append_summary(rows: list[dict[str, str]], counts: dict[str, int]) -> None:
     lines = [
         "## Fork upstream sync summary",
         "",
-        f"- Updated / PR: **{counts.get('updated', 0)}**",
-        f"- Up to date: **{counts.get('up_to_date', 0)}**",
-        f"- Conflicts: **{counts.get('conflict', 0)}**",
-        f"- Skipped: **{counts.get('skipped', 0)}**",
-        f"- Failed: **{counts.get('failed', 0)}**",
+        *[
+            f"- {label}: **{counts[status]}**"
+            for status, label in STATUS_LABELS.items()
+        ],
         "",
         "| Repository | Status | Details |",
         "|---|---|---|",
@@ -538,14 +545,7 @@ def main() -> int:
     log(f"Starting sync for {len(repos)} configured repositories; dry_run={dry_run}")
 
     rows: list[dict[str, str]] = []
-    counts = {
-        "updated": 0,
-        "up_to_date": 0,
-        "conflict": 0,
-        "skipped": 0,
-        "failed": 0,
-        "dry_run": 0,
-    }
+    counts = dict.fromkeys(STATUS_LABELS, 0)
 
     for index, item in enumerate(repos, start=1):
         if not isinstance(item, dict):
@@ -559,7 +559,7 @@ def main() -> int:
         log(f"\n[{index}/{len(repos)}] Processing {repo_name}")
         try:
             status, details = sync_one(item, settings, dry_run)
-            counts[status] = counts.get(status, 0) + 1
+            counts[status] += 1
             rows.append({"repo": repo_name, "status": status, "details": details})
             log(f"{status.upper()}: {details}")
         except Exception as exc:

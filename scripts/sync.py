@@ -26,7 +26,7 @@ TOKEN = os.environ.get("FORK_SYNC_TOKEN", "").strip()
 MANAGER_REPO = os.environ.get("GITHUB_REPOSITORY", "YOUR_GITHUB_USERNAME/fork-sync-manager")
 API_VERSION = "2022-11-28"
 STATUS_LABELS: dict[str, str] = {
-    "updated": "Updated / PR",
+    "merged": "Merged",
     "up_to_date": "Up to date",
     "conflict": "Conflicts",
     "skipped": "Skipped",
@@ -41,12 +41,6 @@ class SyncError(RuntimeError):
     pass
 
 
-class GitHubApiError(SyncError):
-    def __init__(self, message: str, status: int):
-        super().__init__(message)
-        self.status = status
-
-
 class SelectionError(SyncError):
     pass
 
@@ -57,8 +51,6 @@ class Settings:
     dry_run: bool
     discover_forks: bool
     max_repos: int
-    sync_branch: str
-    pr_title_prefix: str
     exclude: frozenset[str]
 
 
@@ -77,28 +69,12 @@ class ResolvedRepo:
     upstream: str
     target_branch: str
     upstream_branch: str
-    sync_branch: str
-    title: str
-
-    def __post_init__(self) -> None:
-        if self.sync_branch == self.target_branch:
-            raise SyncError(
-                f"settings.sync_branch {self.sync_branch!r} is the target branch of {self.fork}; "
-                "use a separate automation branch"
-            )
 
 
 @dataclass(frozen=True)
 class RepoResult:
     status: str
     details: str
-
-
-@dataclass(frozen=True)
-class SyncCommit:
-    reusable: bool
-    head_sha: str
-    upstream_sha: str
 
 
 def log(message: str) -> None:
@@ -125,8 +101,8 @@ def api_request(method: str, path: str, payload: dict[str, Any] | None = None) -
             return json.loads(raw.decode("utf-8")) if raw else None
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        raise GitHubApiError(
-            f"GitHub API {method} {path} failed: HTTP {exc.code}: {detail[:1500]}", exc.code
+        raise SyncError(
+            f"GitHub API {method} {path} failed: HTTP {exc.code}: {detail[:1500]}"
         ) from exc
     except urllib.error.URLError as exc:
         raise SyncError(f"GitHub API connection failed for {path}: {exc}") from exc
@@ -198,91 +174,6 @@ def is_ancestor(cwd: Path, older: str, newer: str) -> bool:
     raise SyncError(f"git merge-base failed: {detail}")
 
 
-def remote_branch_exists(cwd: Path, repo_slug: str, branch: str) -> bool:
-    result = git(
-        ["ls-remote", "--exit-code", "--heads", "origin", f"refs/heads/{branch}"],
-        cwd,
-        check=False,
-    )
-    if result.returncode == 0:
-        return True
-    # ls-remote returns 2 when the requested ref does not exist.
-    if result.returncode == 2:
-        return False
-    detail = (result.stderr or result.stdout).strip()
-    raise SyncError(f"Unable to inspect automation branch in {repo_slug}: {detail}")
-
-
-def list_sync_prs(fork: str, head: str, base: str) -> list[dict[str, Any]]:
-    query = urllib.parse.urlencode({
-        "state": "all",
-        "head": head,
-        "base": base,
-        "per_page": 100,
-    })
-    result = api_request("GET", f"/repos/{fork}/pulls?{query}")
-    if not isinstance(result, list):
-        raise SyncError(f"GitHub /repos/{fork}/pulls returned an unexpected result")
-    return result
-
-
-def ensure_pull_request(
-    fork: str,
-    target_branch: str,
-    sync_branch: str,
-    title: str,
-    body: str,
-    head_sha: str,
-) -> tuple[str, str | None]:
-    owner = fork.split("/", 1)[0]
-    prs = list_sync_prs(fork, f"{owner}:{sync_branch}", target_branch)
-    prs.sort(key=lambda item: item.get("updated_at", ""), reverse=True)
-
-    open_pr = next((pr for pr in prs if pr.get("state") == "open"), None)
-    if open_pr:
-        updated = api_request(
-            "PATCH",
-            f"/repos/{fork}/pulls/{open_pr['number']}",
-            {"title": title, "body": body},
-        )
-        return "updated_pr", updated.get("html_url")
-
-    closed_pr = next((pr for pr in prs if pr.get("state") == "closed"), None)
-    if closed_pr:
-        # Do not reopen a PR that the user closed unless the automation branch
-        # now contains new commits compared with the closed PR's head.
-        old_sha = ((closed_pr.get("head") or {}).get("sha") or "")
-        if old_sha == head_sha:
-            return "closed_by_user", closed_pr.get("html_url")
-        # GitHub never reopens a merged PR, and answers 422 to reopening a PR
-        # whose head branch was force-pushed or recreated after it closed.
-        # Both cases get a new PR for the same head and base.
-        if not closed_pr.get("merged_at"):
-            try:
-                reopened = api_request(
-                    "PATCH",
-                    f"/repos/{fork}/pulls/{closed_pr['number']}",
-                    {"state": "open", "title": title, "body": body},
-                )
-                return "reopened_pr", reopened.get("html_url")
-            except GitHubApiError as exc:
-                if exc.status != 422:
-                    raise
-
-    created = api_request(
-        "POST",
-        f"/repos/{fork}/pulls",
-        {
-            "title": title,
-            "body": body,
-            "head": f"{owner}:{sync_branch}",
-            "base": target_branch,
-            "maintainer_can_modify": True,
-        },
-    )
-    return "created_pr", created.get("html_url")
-
-
 def append_summary(rows: list[dict[str, str]], counts: dict[str, int]) -> None:
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if not summary_path:
@@ -337,16 +228,11 @@ def sync_one(repo: RepoSpec, settings: Settings) -> RepoResult:
         upstream=upstream,
         target_branch=target_branch,
         upstream_branch=upstream_branch,
-        sync_branch=settings.sync_branch,
-        title=f"{settings.pr_title_prefix}: {upstream} ({upstream_branch})",
     )
-    commit = advance_sync_branch(resolved, settings.dry_run)
-    if isinstance(commit, RepoResult):
-        return commit
-    return publish_sync(resolved, commit)
+    return merge_upstream(resolved, settings.dry_run)
 
 
-def advance_sync_branch(repo: ResolvedRepo, dry_run: bool) -> RepoResult | SyncCommit:
+def merge_upstream(repo: ResolvedRepo, dry_run: bool) -> RepoResult:
     with tempfile.TemporaryDirectory(prefix="fork-sync-") as tmp:
         workdir = Path(tmp)
         git(["init"], workdir)
@@ -357,7 +243,6 @@ def advance_sync_branch(repo: ResolvedRepo, dry_run: bool) -> RepoResult | SyncC
 
         target_ref = f"refs/remotes/origin/{repo.target_branch}"
         upstream_ref = f"refs/remotes/upstream/{repo.upstream_branch}"
-        sync_ref = f"refs/remotes/origin/{repo.sync_branch}"
         git(["fetch", "--no-tags", "origin", f"+refs/heads/{repo.target_branch}:{target_ref}"], workdir)
         git(["fetch", "--no-tags", "upstream", f"+refs/heads/{repo.upstream_branch}:{upstream_ref}"], workdir)
 
@@ -366,96 +251,39 @@ def advance_sync_branch(repo: ResolvedRepo, dry_run: bool) -> RepoResult | SyncC
                 "up_to_date", f"{repo.fork} already contains {repo.upstream}@{repo.upstream_branch}"
             )
 
-        has_remote_sync_branch = remote_branch_exists(workdir, repo.fork, repo.sync_branch)
-        old_sync_sha = None
-        if has_remote_sync_branch:
-            git(["fetch", "--no-tags", "origin", f"+refs/heads/{repo.sync_branch}:{sync_ref}"], workdir)
-            old_sync_sha = git(["rev-parse", sync_ref], workdir).stdout.strip()
-
-        reusable = (
-            has_remote_sync_branch
-            and is_ancestor(workdir, target_ref, sync_ref)
-            and is_ancestor(workdir, upstream_ref, sync_ref)
+        git(["checkout", "-B", repo.target_branch, target_ref], workdir)
+        merge = git(
+            ["merge", "--ff", "--no-edit", upstream_ref],
+            workdir,
+            check=False,
         )
-
-        if reusable:
-            git(["checkout", "-B", repo.sync_branch, sync_ref], workdir)
-            if dry_run:
-                return RepoResult("dry_run", "Would ensure PR for existing automation branch")
-        else:
-            git(["checkout", "-B", repo.sync_branch, target_ref], workdir)
-            merge = git(
-                ["merge", "--no-ff", "--no-edit", upstream_ref],
+        if merge.returncode != 0:
+            conflicts = git(
+                ["diff", "--name-only", "--diff-filter=U"],
                 workdir,
                 check=False,
-            )
-            if merge.returncode != 0:
-                conflicts = git(
-                    ["diff", "--name-only", "--diff-filter=U"],
-                    workdir,
-                    check=False,
-                ).stdout.strip().splitlines()
-                if conflicts:
-                    git(["merge", "--abort"], workdir, check=False)
-                    return RepoResult("conflict", "Conflicting files: " + ", ".join(conflicts[:30]))
-                detail = (merge.stderr or merge.stdout).strip()
-                raise SyncError(f"merge failed (possibly unrelated histories): {detail[-2000:]}")
-
-            if dry_run:
-                sha = git(["rev-parse", "HEAD"], workdir).stdout.strip()
-                return RepoResult("dry_run", f"Would push merge {sha[:12]} and open/update PR")
-
-            if has_remote_sync_branch:
-                git(
-                    ["push",
-                     f"--force-with-lease=refs/heads/{repo.sync_branch}:{old_sync_sha}",
-                     "origin",
-                     f"HEAD:refs/heads/{repo.sync_branch}"],
-                    workdir,
+            ).stdout.strip().splitlines()
+            if conflicts:
+                git(["merge", "--abort"], workdir, check=False)
+                return RepoResult(
+                    "conflict",
+                    f"Conflicting files: {', '.join(conflicts[:30])}. "
+                    f"Merge {repo.upstream}@{repo.upstream_branch} into {repo.target_branch} by hand; "
+                    "the next run then reports up_to_date.",
                 )
-            else:
-                git(["push", "origin", f"HEAD:refs/heads/{repo.sync_branch}"], workdir)
+            detail = (merge.stderr or merge.stdout).strip()
+            raise SyncError(f"merge failed (possibly unrelated histories): {detail[-2000:]}")
 
-        return SyncCommit(
-            reusable=reusable,
-            head_sha=git(["rev-parse", "HEAD"], workdir).stdout.strip(),
-            upstream_sha=git(["rev-parse", upstream_ref], workdir).stdout.strip(),
-        )
+        head = git(["rev-parse", "HEAD"], workdir).stdout.strip()
+        upstream_head = git(["rev-parse", upstream_ref], workdir).stdout.strip()
+        how = "fast-forward" if head == upstream_head else "merge commit"
+        if dry_run:
+            return RepoResult(
+                "dry_run", f"Would push {how} {head[:12]} to {repo.target_branch}"
+            )
 
-
-def publish_sync(repo: ResolvedRepo, commit: SyncCommit) -> RepoResult:
-    body = f"""## Automated upstream sync
-
-This PR was generated by [{MANAGER_REPO}](https://github.com/{MANAGER_REPO}).
-
-| Item | Value |
-|---|---|
-| Fork | `{repo.fork}` |
-| Target branch | `{repo.target_branch}` |
-| Upstream | `{repo.upstream}` |
-| Upstream branch | `{repo.upstream_branch}` |
-| Upstream commit | `{commit.upstream_sha}` |
-| Sync branch | `{repo.sync_branch}` |
-| Sync commit | `{commit.head_sha}` |
-
-The sync uses a regular Git merge. Existing commits on the Fork's target branch are retained.
-If a merge conflict is detected, this automation does not push a new sync branch for that run.
-
-Please review the diff and CI checks before merging.
-"""
-    pr_status, pr_url = ensure_pull_request(
-        fork=repo.fork,
-        target_branch=repo.target_branch,
-        sync_branch=repo.sync_branch,
-        title=repo.title,
-        body=body,
-        head_sha=commit.head_sha,
-    )
-    if pr_status == "closed_by_user":
-        return RepoResult("skipped", f"PR was previously closed and sync branch has not changed: {pr_url}")
-    action = "reused" if commit.reusable else "pushed"
-    url_text = f" | {pr_url}" if pr_url else ""
-    return RepoResult("updated", f"{action} sync branch; {pr_status}{url_text}")
+        git(["push", "origin", f"HEAD:refs/heads/{repo.target_branch}"], workdir)
+        return RepoResult("merged", f"pushed {how} {head[:12]} to {repo.target_branch}")
 
 
 def discover_forks(owner: str) -> list[str]:
@@ -525,20 +353,12 @@ def parse_config(path: Path) -> tuple[Settings, tuple[RepoSpec, ...]]:
 
     dry_run = read_bool(raw_settings, "dry_run", False, "settings.dry_run")
     discover = read_bool(raw_settings, "discover_forks", True, "settings.discover_forks")
-    sync_branch = validate_branch(
-        raw_settings.get("sync_branch", "automation/upstream-sync"), "settings.sync_branch"
-    )
-    title_prefix = raw_settings.get("pr_title_prefix", "Upstream sync")
-    if not isinstance(title_prefix, str):
-        raise SyncError(f"settings.pr_title_prefix must be a string; got: {title_prefix!r}")
 
     settings = Settings(
         owner=owner,
         dry_run=dry_run,
         discover_forks=discover,
         max_repos=max_repos,
-        sync_branch=sync_branch,
-        pr_title_prefix=title_prefix,
         exclude=frozenset(x.lower() if "/" in x else f"{owner}/{x}".lower() for x in excluded),
     )
 
@@ -636,9 +456,7 @@ def main() -> int:
     for key, value in counts.items():
         log(f"{key}: {value}")
 
-    # Conflicts are expected manual-review cases; they do not stop other repos.
-    # Actual API/network/permission/config errors make the workflow fail.
-    return 1 if counts["failed"] else 0
+    return 1 if counts["failed"] or counts["conflict"] else 0
 
 
 if __name__ == "__main__":

@@ -4,8 +4,6 @@ settings:
   dry_run: true
   discover_forks: true
   max_repos: 100
-  sync_branch: automation/upstream-sync
-  pr_title_prefix: "Upstream sync"
 
   # 如需只使用特定账号，取消下一行注释，并填写账号名。
   # owner: YOUR_GITHUB_USERNAME

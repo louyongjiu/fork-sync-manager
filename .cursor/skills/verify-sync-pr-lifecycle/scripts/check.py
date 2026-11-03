@@ -40,7 +40,8 @@ TLA_URL = f"https://github.com/tlaplus/tlaplus/releases/download/v{TLA_VERSION}/
 TLA_SHA256 = "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
 
 COVERED = {"scripts/sync.py": ["GitHubApiError", "api_request", "is_ancestor", "remote_branch_exists",
-                               "list_sync_prs", "ensure_pull_request", "sync_one"]}
+                               "list_sync_prs", "ensure_pull_request", "sync_one", "ResolvedRepo",
+                               "advance_sync_branch", "publish_sync"]}
 
 RULES = ["TypeOK", "NoFailedRun", "DefaultBranchNeverPushed",
          "ClosedPrNotReopenedUnchanged", "UpdatedRunLeavesOpenPrWithUpstream"]
@@ -53,13 +54,16 @@ CHECKS: list[tuple[str, str, str, str, str]] = [
     ("SameBranch.cfg", "SyncPrLifecycle", "NoFailedRun", "violated",
      "by design: sync_branch equal to the default branch fails the fork's run"),
     ("BreakReopenFallback.cfg", "SyncPrLifecycleVariants", "NoFailedRun", "violated",
-     "break caught: without lines 201-211 a run fails after you merge or close a sync PR"),
+     "break caught: without ensure_pull_request's merged_at check and 422 fallback a run fails "
+     "after you merge or close a sync PR"),
     ("BreakSyncBranchCheck.cfg", "SyncPrLifecycleVariants", "DefaultBranchNeverPushed", "violated",
-     "break caught: without lines 291-295 sync_branch: main pushes the default branch"),
+     "break caught: without ResolvedRepo's sync_branch check sync_branch: main pushes the default branch"),
     ("BreakClosedCheck.cfg", "SyncPrLifecycleVariants", "ClosedPrNotReopenedUnchanged", "violated",
-     "break caught: without line 196 a PR you closed is reopened unchanged"),
+     "break caught: without ensure_pull_request's old_sha == head_sha check a PR you closed is "
+     "reopened unchanged"),
     ("BreakReuseCheck.cfg", "SyncPrLifecycleVariants", "UpdatedRunLeavesOpenPrWithUpstream", "violated",
-     "break caught: without line 344 a reused branch misses new upstream commits"),
+     "break caught: without the upstream ancestor test in advance_sync_branch's reusable a reused "
+     "branch misses new upstream commits"),
 ]
 
 

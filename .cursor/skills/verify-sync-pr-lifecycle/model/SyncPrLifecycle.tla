@@ -120,17 +120,17 @@ YouClosePr ==
 ----------------------------------------------------------------------------
 (* One run of sync_one() for this fork                                     *)
 
-\* sync_one lines 340-345: reusable
+\* advance_sync_branch: reusable
 Reusable(t, s) == s.exists /\ IsAncestor(t, s) /\ IsAncestor(up, s)
 
-\* sync_one lines 291-295: raise SyncError before any git command
+\* ResolvedRepo.__post_init__: raise SyncError before any git command
 SyncBranchIsTarget == SyncBranch = TargetBranch
 
-\* sync_one lines 291-386: the sync_branch check, then fetch both branches,
-\* then up_to_date (line 322), reuse (lines 347-349), conflict (lines
-\* 357-365), or rebuild the automation branch from the target, merge
-\* upstream and push it (lines 351-386).  A conflict can happen on any
-\* merge: the model does not track file contents.
+\* sync_one builds ResolvedRepo (the sync_branch check), then
+\* advance_sync_branch fetches both branches and returns up_to_date, reuses
+\* the automation branch, returns conflict, or rebuilds the automation
+\* branch from the target, merges upstream and pushes it.  A conflict can
+\* happen on any merge: the model does not track file contents.
 RunFetchesAndPushes ==
     /\ phase = "idle"
     /\ nRuns < MaxRuns
@@ -176,7 +176,7 @@ CanReopen ==
 \* GitHub refuses POST /pulls when the head adds nothing to the base.
 NoCommitsBetween(h) == h \in fork[TargetBranch].has
 
-\* ensure_pull_request line 196: old_sha == head_sha
+\* ensure_pull_request: old_sha == head_sha
 ClosedPrUnchanged == pr.head = runHead
 
 Finish(status, call) ==
@@ -185,7 +185,7 @@ Finish(status, call) ==
     /\ phase' = "idle"
     /\ justRan' = TRUE
 
-\* ensure_pull_request lines 213-224: POST /pulls.  The new PR is the newest
+\* ensure_pull_request: POST /pulls.  The new PR is the newest
 \* one, so list_sync_prs() returns it first from now on.
 CreatePr ==
     IF NoCommitsBetween(runHead)
@@ -194,13 +194,13 @@ CreatePr ==
     ELSE /\ pr' = [exists |-> TRUE, open |-> TRUE, merged |-> FALSE, head |-> runHead]
          /\ Finish("updated", Call("create", 0, runHead))
 
-\* ensure_pull_request lines 201-211: no PATCH for a merged PR, and a 422 from
+\* ensure_pull_request: no PATCH for a merged PR, and a 422 from
 \* PATCH state=open falls through to POST /pulls.
 WhenReopenImpossible == CreatePr
 
-\* ensure_pull_request lines 170-224 and the status mapping at lines 421-425.
+\* ensure_pull_request and the status mapping in publish_sync.
 \* Any other HTTP error from GitHub raises SyncError, and main() logs FAILED.
-\* The PATCH state=open at lines 203-208 succeeds exactly when CanReopen.
+\* ensure_pull_request's PATCH state=open succeeds exactly when CanReopen.
 EnsurePr ==
     IF ~pr.exists
     THEN CreatePr
@@ -215,7 +215,7 @@ EnsurePr ==
          /\ Finish("updated", Call("reopen", pr.head, runHead))
     ELSE WhenReopenImpossible
 
-\* sync_one lines 391-425
+\* publish_sync
 RunUpdatesPr ==
     /\ phase = "pr"
     /\ EnsurePr

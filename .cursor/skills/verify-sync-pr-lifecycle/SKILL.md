@@ -1,6 +1,6 @@
 ---
 name: verify-sync-pr-lifecycle
-description: 用 TLA+ 模型和 TLC 模型检查器，验证 scripts/sync.py 在多次每日运行中处理同步 PR 和自动化分支的承诺：运行不因以前的同步 PR 而失败、从不推送 Fork 默认分支、用户关闭的 PR 不会原样重开、报告 updated 时一定有包含上游的打开 PR；并把模型路径放到真实 sync.py 上重放。修改 sync_one、ensure_pull_request、list_sync_prs、api_request、is_ancestor、remote_branch_exists，或修改 settings.sync_branch 的处理之后使用。
+description: 用 TLA+ 模型和 TLC 模型检查器，验证 scripts/sync.py 在多次每日运行中处理同步 PR 和自动化分支的承诺：运行不因以前的同步 PR 而失败、从不推送 Fork 默认分支、用户关闭的 PR 不会原样重开、报告 updated 时一定有包含上游的打开 PR；并把模型路径放到真实 sync.py 上重放。修改 sync_one、ResolvedRepo、advance_sync_branch、publish_sync、ensure_pull_request、list_sync_prs、api_request、is_ancestor、remote_branch_exists，或修改 settings.sync_branch 的处理之后使用。
 ---
 
 # 验证同步 PR 的生命周期
@@ -25,7 +25,7 @@ description: 用 TLA+ 模型和 TLC 模型检查器，验证 scripts/sync.py 在
 
 ## 覆盖的代码与同步点
 
-模型描述的是 `scripts/sync.py` 里的这些代码：`GitHubApiError`、`api_request`、`is_ancestor`、`remote_branch_exists`、`list_sync_prs`、`ensure_pull_request`、`sync_one`（只描述其中 `dry_run: false` 的路径）。
+模型描述的是 `scripts/sync.py` 里的这些代码：`GitHubApiError`、`api_request`、`is_ancestor`、`remote_branch_exists`、`list_sync_prs`、`ensure_pull_request`、`sync_one`、`ResolvedRepo`、`advance_sync_branch`、`publish_sync`（只描述 `dry_run: false` 的路径）。
 
 - 同步提交：**无**。仓库目前没有任何提交。上次确认时 `scripts/sync.py` 整个文件的 sha256 为 `d60d0ef628c6f5e2…`，确认时间写在 [`coverage.json`](coverage.json) 的 `confirmed_at` 里。
 - 每个函数和类源码的 sha256 也记在 `coverage.json` 里，`check.py` 每次都会对比。
@@ -36,17 +36,17 @@ description: 用 TLA+ 模型和 TLC 模型检查器，验证 scripts/sync.py 在
 | 模型（`model/SyncPrLifecycle.tla`） | 代码或 GitHub 规则 |
 |---|---|
 | `IsAncestor(a, b)` | `is_ancestor()`：`git merge-base --is-ancestor` |
-| `SyncBranchIsTarget` | `sync_one` 第 291–295 行：`sync_branch == target_branch` 时抛出 `SyncError`，发生在所有 git 命令之前 |
-| `RunFetchesAndPushes`：上游已在目标分支里 | `sync_one` 第 322 行，返回 `up_to_date` |
-| `Reusable(t, s)` | `sync_one` 第 340–345 行，变量 `reusable` |
-| `RunFetchesAndPushes`：复用分支 | 第 347–349 行，不推送 |
-| `RunFetchesAndPushes`：冲突 | 第 357–365 行，`merge --abort` 后返回 `conflict` |
-| `RunFetchesAndPushes`：重建并推送 | 第 351–386 行：`checkout -B` 目标分支，`merge --no-ff` 上游，然后推送（分支已存在时用 `--force-with-lease`） |
-| `RunUpdatesPr` / `EnsurePr` | `sync_one` 第 391–425 行和 `ensure_pull_request` 第 170–224 行 |
+| `SyncBranchIsTarget` | `ResolvedRepo.__post_init__`：`sync_branch == target_branch` 时抛出 `SyncError`。`sync_one` 在调用 `advance_sync_branch` 之前构造 `ResolvedRepo`，所以发生在所有 git 命令之前 |
+| `RunFetchesAndPushes`：上游已在目标分支里 | `advance_sync_branch`：上游分支是目标分支的祖先时，返回 `up_to_date` |
+| `Reusable(t, s)` | `advance_sync_branch` 里的变量 `reusable` |
+| `RunFetchesAndPushes`：复用分支 | `advance_sync_branch` 的 `if reusable` 分支，不推送 |
+| `RunFetchesAndPushes`：冲突 | `advance_sync_branch`：`merge --abort` 后返回 `conflict` |
+| `RunFetchesAndPushes`：重建并推送 | `advance_sync_branch` 的 `else` 分支：`checkout -B` 目标分支，`merge --no-ff` 上游，然后推送（分支已存在时用 `--force-with-lease`） |
+| `RunUpdatesPr` / `EnsurePr` | `publish_sync`（生成 PR 正文、把 PR 结果换成状态）和 `ensure_pull_request` |
 | `pr` 只记最新一个 PR | `list_sync_prs` 按 head 和 base 过滤，`ensure_pull_request` 按 `updated_at` 倒序，只取第一个打开的或第一个关闭的。新建的 PR 是最新的，之后总是被先取到 |
-| `ClosedPrUnchanged` | 第 196 行 `old_sha == head_sha` |
-| `CanReopen` 分支 | 第 201–208 行：只对没有 `merged_at` 的 PR 发 `PATCH state=open`。GitHub 规则：已合并的 PR 不能重新打开；关闭后分支被删除、强制推送或重建，也不能重新打开（422） |
-| `WhenReopenImpossible` = `CreatePr` | 第 201 行跳过已合并的 PR，第 209–211 行吞掉 422，然后走到第 213–224 行的 `POST /pulls` |
+| `ClosedPrUnchanged` | `ensure_pull_request` 里的 `old_sha == head_sha` |
+| `CanReopen` 分支 | `ensure_pull_request`：只对没有 `merged_at` 的 PR 发 `PATCH state=open`。GitHub 规则：已合并的 PR 不能重新打开；关闭后分支被删除、强制推送或重建，也不能重新打开（422） |
+| `WhenReopenImpossible` = `CreatePr` | `ensure_pull_request` 跳过已合并的 PR，吞掉重新打开时的 422，然后走到最后的 `POST /pulls` |
 | `NoCommitsBetween` | GitHub 规则：head 相对 base 没有新提交时，`POST /pulls` 返回 422 |
 | `Finish("failed", …)` | 其他 HTTP 错误由 `api_request` 抛出 `GitHubApiError`（它是 `SyncError` 的子类），`main()` 记为 `failed` |
 | `YouMergePr("merge" / "squash", deleteBranch)` | GitHub 的 “Create a merge commit” / “Squash and merge”，以及 “Automatically delete head branches” |
@@ -58,7 +58,7 @@ description: 用 TLA+ 模型和 TLC 模型检查器，验证 scripts/sync.py 在
 - **原子步骤**：一次运行分成两步。第一步是全部 git 操作（取分支、判断、推送），第二步是 PR 的列表请求，加上紧随其后的 `PATCH` 和 `POST`。用户和上游的动作可以插在这两步之间，但不会插进某一步内部（这两种情况在代码里都只隔几毫秒到几秒）。
 - **只建模一个 Fork**：各个 Fork 在 `main()` 里依次独立处理。workflow 的 `concurrency` 分组保证同一时间只有一次运行。
 - **冲突**：模型不记录文件内容，每次合并都可能冲突，所以模型里的冲突比现实多。这只会增加行为，不会掩盖问题。
-- **GitHub 行为**：上表里的 GitHub 规则来自 GitHub 的公开行为（422 `state cannot be changed`、`No commits between`），本地替身也按这些规则实现。如果真实 GitHub 不同，第 201–211 行的分支需要重新确认。
+- **GitHub 行为**：上表里的 GitHub 规则来自 GitHub 的公开行为（422 `state cannot be changed`、`No commits between`），本地替身也按这些规则实现。如果真实 GitHub 不同，`ensure_pull_request` 里重新打开和 422 回退的分支需要重新确认。
 - **没有建模的部分**：`dry_run: true`（不推送也不调用 PR 接口）、自动发现和配置解析、网络和权限错误、GitHub 限速、用户手动往自动化分支推送、用户手动为同一个分支另开 PR、非 Fork 的显式配置仓库。
 
 ## 运行
@@ -85,10 +85,10 @@ description: 用 TLA+ 模型和 TLC 模型检查器，验证 scripts/sync.py 在
 | `SyncPrLifecycle.cfg` | 五条全部 | 成立 | 当前代码在界限内满足四条承诺 |
 | `SameBranch.cfg` | `DefaultBranchNeverPushed` | 成立 | `sync_branch` 设为 `main` 时，默认分支不被推送 |
 | `SameBranch.cfg` | `NoFailedRun` | 违反 | 设计如此：这种配置会让该 Fork 报 `failed` |
-| `BreakReopenFallback.cfg` | `NoFailedRun` | 违反 | 去掉第 201–211 行时能抓到 |
-| `BreakSyncBranchCheck.cfg` | `DefaultBranchNeverPushed` | 违反 | 去掉第 291–295 行时能抓到 |
-| `BreakClosedCheck.cfg` | `ClosedPrNotReopenedUnchanged` | 违反 | 去掉第 196 行时能抓到 |
-| `BreakReuseCheck.cfg` | `UpdatedRunLeavesOpenPrWithUpstream` | 违反 | 去掉第 344 行时能抓到 |
+| `BreakReopenFallback.cfg` | `NoFailedRun` | 违反 | 去掉 `ensure_pull_request` 的 `merged_at` 判断和 422 回退时能抓到 |
+| `BreakSyncBranchCheck.cfg` | `DefaultBranchNeverPushed` | 违反 | 去掉 `ResolvedRepo.__post_init__` 的检查时能抓到 |
+| `BreakClosedCheck.cfg` | `ClosedPrNotReopenedUnchanged` | 违反 | 去掉 `ensure_pull_request` 的 `old_sha == head_sha` 判断时能抓到 |
+| `BreakReuseCheck.cfg` | `UpdatedRunLeavesOpenPrWithUpstream` | 违反 | 去掉 `advance_sync_branch` 里 `reusable` 的上游祖先判断时能抓到 |
 
 ## 当前结论
 
@@ -108,7 +108,7 @@ description: 用 TLA+ 模型和 TLC 模型检查器，验证 scripts/sync.py 在
 
 1. **改动是否碰到了覆盖的代码？** 跑 `check.py`。退出码 `2` 并列出函数名，说明覆盖的代码变了。除了函数名，也要看有没有新代码写到同样的状态：推送分支、调用 PR 接口、改变 `reusable` 或 `head_sha` 的取值、改变 `api_request` 抛出的异常。函数改名或拆分之后，仍然算覆盖范围内的代码，`COVERED` 也要跟着改。
 2. **先重放。** 跑 `replay.py`（如果改动还没写进工作区，就加 `--sync-py`）。`MISMATCH` 说明代码已经不再按模型走了。
-3. **按代码更新模型，不要按结果去调。** 对照上面的对应表，修改对应的动作或运算，并同步更新模型注释里的行号。代码里一个不可分的步骤，模型里也只能是一步。只有在改动有明确意图（提交说明、README、测试里写明承诺变了）时，才去改规则，并在本文件里写下旧说法、新说法和依据。
+3. **按代码更新模型，不要按结果去调。** 对照上面的对应表，修改对应的动作或运算，并同步更新模型注释里的函数名。代码里一个不可分的步骤，模型里也只能是一步。只有在改动有明确意图（提交说明、README、测试里写明承诺变了）时，才去改规则，并在本文件里写下旧说法、新说法和依据。
 4. **重跑 `check.py`。**
    - 规则违反时，用 `/statechart` 读最短路径，再用 harness 一步步重放到真实代码上。路径上的每一步代码都真的会做，就是 bug：报告路径和后果，不要改代码，除非用户要求。有一步代码不会做，就是模型错了：修模型，并说明错在哪里。
    - 规则通过时，在 `model/SyncPrLifecycleVariants.tla` 里加一个去掉新检查的变体，再加一个 `Break*.cfg` 和一行 `CHECKS`，确认 TLC 能抓到；同时在 `sync.py` 副本里去掉这项检查，用 `replay.py --sync-py` 确认重放也能抓到。
@@ -131,7 +131,7 @@ description: 用 TLA+ 模型和 TLC 模型检查器，验证 scripts/sync.py 在
 
 | 规则 | 变体 | TLC 给出的最短路径 | 在真实代码副本上（`replay.py --sync-py`） |
 |---|---|---|---|
-| `NoFailedRun` | `BreakReopenFallback.cfg`：去掉第 201–211 行的 `merged_at` 判断和 422 回退 | 建 PR → 你合并 → 运行推送同步分支 → 重新打开被拒，运行失败 | `squash-merged`、`merge-then-upstream`、`close-then-upstream` 三个场景都出现 `MISMATCH`，得到 `FAILED ... HTTP 422` |
-| `DefaultBranchNeverPushed` | `BreakSyncBranchCheck.cfg`：去掉第 291–295 行，`sync_branch` 设为 `main` | 上游推进 → 运行推送到 `main` | `sync-branch-is-default` 出现 `MISMATCH`，默认分支被改写 |
-| `ClosedPrNotReopenedUnchanged` | `BreakClosedCheck.cfg`：去掉第 196 行 | 建 PR → 你关闭 → 运行复用分支 → 重新打开 | `close-then-upstream` 在 `closed-unchanged` 这一步出现 `MISMATCH`，得到 `reopened_pr` |
-| `UpdatedRunLeavesOpenPrWithUpstream` | `BreakReuseCheck.cfg`：去掉第 344 行 | 上游推进 → 运行推送 → 上游再推进 → 运行复用旧分支并报告 `updated` | 没有在副本上重放过 |
+| `NoFailedRun` | `BreakReopenFallback.cfg`：去掉 `ensure_pull_request` 里的 `merged_at` 判断和 422 回退 | 建 PR → 你合并 → 运行推送同步分支 → 重新打开被拒，运行失败 | `squash-merged`、`merge-then-upstream`、`close-then-upstream` 三个场景都出现 `MISMATCH`，得到 `FAILED ... HTTP 422` |
+| `DefaultBranchNeverPushed` | `BreakSyncBranchCheck.cfg`：去掉 `ResolvedRepo.__post_init__` 里的检查，`sync_branch` 设为 `main` | 上游推进 → 运行推送到 `main` | `sync-branch-is-default` 出现 `MISMATCH`，默认分支被改写 |
+| `ClosedPrNotReopenedUnchanged` | `BreakClosedCheck.cfg`：去掉 `ensure_pull_request` 里的 `old_sha == head_sha` 判断 | 建 PR → 你关闭 → 运行复用分支 → 重新打开 | `close-then-upstream` 在 `closed-unchanged` 这一步出现 `MISMATCH`，得到 `reopened_pr` |
+| `UpdatedRunLeavesOpenPrWithUpstream` | `BreakReuseCheck.cfg`：去掉 `advance_sync_branch` 里 `reusable` 的上游祖先判断 | 上游推进 → 运行推送 → 上游再推进 → 运行复用旧分支并报告 `updated` | 没有在副本上重放过 |

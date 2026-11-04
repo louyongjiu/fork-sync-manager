@@ -43,6 +43,10 @@ def run(label: str, *extra: str) -> tuple[str, str, list[str]]:
     return ("run", label, list(extra))
 
 
+def variable(name: str) -> tuple[str, list[str]]:
+    return ("variable", ["--dev-branch", name])
+
+
 SCENARIOS: dict[str, list[tuple]] = {
     "dry-run": [
         run("baseline"),
@@ -117,8 +121,8 @@ SCENARIOS: dict[str, list[tuple]] = {
         run("max-repos-2-excluding-one"),
     ],
     "dev-lifecycle": [
-        ("config", ["--dry-run", "false", "--repos-json",
-                    '[{"fork": "alice/widget", "dev_branch": "develop"}]']),
+        ("config", ["--dry-run", "false", "--exclude", "gadget"]),
+        variable("develop"),
         commit("octo/widget", "feature.txt", "upstream 1"),
         run("merge-1"),
         run("pr-open"),
@@ -130,8 +134,8 @@ SCENARIOS: dict[str, list[tuple]] = {
         run("pr-2"),
     ],
     "dev-closed": [
-        ("config", ["--dry-run", "false", "--exclude", "gadget",
-                    "--settings-json", '{"dev_branch": "develop"}']),
+        ("config", ["--dry-run", "false", "--exclude", "gadget"]),
+        variable("develop"),
         commit("octo/widget", "feature.txt", "upstream 1"),
         run("open"),
         ("pr", ["close", "--repo", "alice/widget", "--number", "1"]),
@@ -140,36 +144,42 @@ SCENARIOS: dict[str, list[tuple]] = {
         run("moved"),
     ],
     "dev-squash": [
-        ("config", ["--dry-run", "false", "--exclude", "gadget",
-                    "--settings-json", '{"dev_branch": "develop"}']),
+        ("config", ["--dry-run", "false", "--exclude", "gadget"]),
+        variable("develop"),
         commit("octo/widget", "feature.txt", "upstream 1"),
         run("open"),
         ("pr", ["merge", "--repo", "alice/widget", "--number", "1", "--method", "squash"]),
         run("after-squash"),
     ],
-    "dev-existing-override": [
-        ("config", ["--dry-run", "false", "--exclude", "gadget",
-                    "--settings-json", '{"dev_branch": "develop"}',
-                    "--repos-json", '[{"fork": "alice/widget", "dev_branch": "dev"}]']),
-        commit("alice/widget", "local.txt", "on dev", "--branch", "dev", "--from", "main"),
+    "dev-existing": [
+        ("config", ["--dry-run", "false", "--exclude", "gadget"]),
+        variable("develop"),
+        commit("alice/widget", "local.txt", "on develop", "--branch", "develop", "--from", "main"),
         commit("octo/widget", "feature.txt", "upstream 1"),
-        run("override"),
+        run("existing"),
     ],
     "dev-same-as-target": [
-        ("config", ["--dry-run", "false", "--settings-json", '{"dev_branch": "develop"}']),
+        ("config", ["--dry-run", "false"]),
+        variable("develop"),
         commit("octo/widget", "feature.txt", "upstream 1"),
         commit("octo/gadget", "g.txt", "gadget 1"),
         run("same-name"),
     ],
     "dev-dry-run": [
-        ("config", ["--dry-run", "true", "--exclude", "gadget",
-                    "--settings-json", '{"dev_branch": "develop"}']),
+        ("config", ["--dry-run", "true", "--exclude", "gadget"]),
+        variable("develop"),
         commit("octo/widget", "feature.txt", "upstream 1"),
         run("dry"),
     ],
     "dev-invalid": [
-        ("config", ["--settings-json", '{"dev_branch": "bad..name"}']),
+        variable("bad..name"),
         run("invalid"),
+    ],
+    "dev-config-keys": [
+        ("config", ["--settings-json", '{"dev_branch": "develop"}']),
+        run("settings-key"),
+        ("config", ["--reset", "--repos-json", '[{"fork": "alice/widget", "dev_branch": "develop"}]']),
+        run("repos-key"),
     ],
 }
 

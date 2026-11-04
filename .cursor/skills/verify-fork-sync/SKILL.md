@@ -94,6 +94,7 @@ $run = "<同一个 id>"
 | 用户或外部动作 | 命令 |
 |---|---|
 | 修改管理仓库的 `config/repos.yml` | `config --dry-run true\|false`、`--exclude <名> ...`、`--owner <名>`、`--max-repos <n>`、`--discover true\|false`、`--settings-json '<JSON 对象>'`（原样合并进 `settings:`，用来写字符串布尔值或未知键）、`--repos-json '<JSON 列表>'`、`--reset`（重新复制仓库里的版本，可以和其他参数一起用） |
+| 设置开发分支 | `variable --dev-branch <名字>`。空字符串清除。这个值留在本次运行的状态里，之后每次 `run` 都作为 `FORK_SYNC_DEV_BRANCH` 传给 `scripts/sync.py`，并写进该步的 `command.txt` |
 | 上游维护者或用户推送提交 | `commit --repo <owner/repo> [--branch <分支>] [--from <已有分支>] --file <路径> --text <整行内容>`（文件整体替换为这一行） |
 | 列出 Pull Request | `pr list` |
 | 关闭 Pull Request | `pr close --repo <owner/repo> --number <编号>` |
@@ -114,7 +115,7 @@ harness 本身的退出码等于 `sync.py` 的退出码；harness 自己出错�
 
 ## 行为快照（重构时用）
 
-`scripts/pin.py` 把 21 个固定场景在真实 `sync.py` 上各跑一遍，记成一份规范化文本。每个场景单独 launch 一次运行，4 个并行，结束后自动 cleanup，整体约 3 分钟。场景覆盖：
+`scripts/pin.py` 把 22 个固定场景在真实 `sync.py` 上各跑一遍，记成一份规范化文本。每个场景单独 launch 一次运行，4 个并行，结束后自动 cleanup，整体约 3 分钟。场景覆盖：
 - 试运行，其中冲突那一步退出码是 `1`；
 - Fork 自己有提交时生成合并提交，再运行变为 `up_to_date`；
 - 纯镜像 Fork 快进，目标和上游指向同一个提交；
@@ -131,9 +132,11 @@ harness 本身的退出码等于 `sync.py` 的退出码；harness 自己出错�
 - `max_repos`；
 - 开发分支从合并前的目标提交创建，并打开审查 Pull Request。已经打开的 Pull Request 保持打开，脚本不另建一个，head 跟着目标分支走；
 - 关闭或 Squash 合并之后，目标分支还停在当时的提交上时，脚本不开新的 Pull Request。目标分支前进后才开下一个；
-- 单个仓库的 `dev_branch` 覆盖全局值。它和目标分支同名时，该仓库失败，其他仓库继续；
+- 开发分支已经有自己的提交时，这次运行不创建分支，也不改那个提交，审查 Pull Request 的 base 是这个分支；
+- `FORK_SYNC_DEV_BRANCH` 和某个 Fork 的目标分支同名时，该仓库失败，其他仓库继续；
 - 试运行只在详情里写出将要创建的开发分支和将要打开的 Pull Request，请求只有 `GET`；
-- 不合法的 `dev_branch` 以退出码 `2` 结束。
+- 不合法的 `FORK_SYNC_DEV_BRANCH` 以退出码 `2` 结束；
+- 配置文件里的 `dev_branch` 是未知键，以退出码 `2` 结束。
 
 ```powershell
 & $py .cursor\skills\verify-fork-sync\scripts\pin.py --out .verify\pin\before.txt
@@ -153,7 +156,7 @@ commit 的 sha 每次运行都不同，所以每个场景里按首次出现的�
 
 证据目录是 `.verify\evidence\<run id>\`，已经在 `.gitignore` 中。每次 `run` 写入一个 `NN-run-<标签>\` 子目录，包含：
 
-- `command.txt`：工作目录、命令行、所用 `sync.py` 的路径和 sha256
+- `command.txt`：工作目录、命令行、所用 `sync.py` 的路径和 sha256。本次运行设了 `FORK_SYNC_DEV_BRANCH` 时，文件末尾还有这一行变量
 - `repos.yml`：本次运行使用的配置
 - `stdout.txt`、`stderr.txt`、`exit-code.txt`
 - `step-summary.md`：Actions 任务摘要的原文

@@ -10,7 +10,7 @@
 - `disable`：`repos` 里写 `enabled: false`，状态为 `SKIPPED: disabled in config`，不请求这个仓库的 GitHub API。仓库不存在或 token 看不到时也一样。
 - `override-branch`：`repos` 里给 Fork 指定 `upstream_branch`，合并使用这个上游分支，结果推到 Fork 的目标分支。
 - `owner-mismatch`：`repos` 里写了别的账号的仓库，报 `ERROR: Configured repository does not belong to alice: <仓库>`，退出码 `2`。
-- `unknown-keys`：`settings` 或 `repos` 某一项里有不认识的键，报 `ERROR: Unknown keys in settings: <键>` 或 `ERROR: Unknown keys in repos[<仓库>]: <键>`，退出码 `2`，不请求 GitHub API。
+- `unknown-keys`：`settings` 或 `repos` 某一项里有不认识的键，报 `ERROR: Unknown keys in settings: <键>` 或 `ERROR: Unknown keys in repos[<仓库>]: <键>`，退出码 `2`，不请求 GitHub API。`dev_branch` 也是不认识的键。开发分支名写在 `FORK_SYNC_DEV_BRANCH`，见 [审查 Pull Request](./review-pr.md)。
 - `strict-bools`：`dry_run`、`discover_forks`、`enabled` 不是 `true` / `false`（例如字符串 `"false"`），报 `ERROR: settings.dry_run must be true or false; got: 'false'` 这类错误，退出码 `2`，不请求 GitHub API。
 - `max-repos`：`settings.max_repos` 限制去掉 `exclude` 之后的仓库数。超过时报 `ERROR: Found <数> repositories; max_repos=<上限>. Increase settings.max_repos only after checking your Token's repository access.`，退出码 `2`。
 - `missing-token`：没有 `FORK_SYNC_TOKEN`，报 `ERROR: missing FORK_SYNC_TOKEN environment variable`，退出码 `2`。

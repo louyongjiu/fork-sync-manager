@@ -52,7 +52,6 @@ class Settings:
     discover_forks: bool
     max_repos: int
     exclude: frozenset[str]
-    dev_branch: str | None
 
 
 @dataclass(frozen=True)
@@ -62,7 +61,6 @@ class RepoSpec:
     upstream: str | None = None
     target_branch: str | None = None
     upstream_branch: str | None = None
-    dev_branch: str | None = None
 
 
 @dataclass(frozen=True)
@@ -76,8 +74,8 @@ class ResolvedRepo:
     def __post_init__(self) -> None:
         if self.dev_branch is not None and self.dev_branch == self.target_branch:
             raise SyncError(
-                f"dev_branch {self.dev_branch!r} is the target branch of {self.fork}; "
-                "set target_branch or dev_branch for this repo"
+                f"FORK_SYNC_DEV_BRANCH {self.dev_branch!r} is the target branch of {self.fork}; "
+                "set target_branch for this repo or exclude it"
             )
 
 
@@ -215,7 +213,7 @@ def append_summary(rows: list[dict[str, str]], counts: dict[str, int]) -> None:
         handle.write("\n".join(lines) + "\n")
 
 
-def sync_one(repo: RepoSpec, settings: Settings) -> RepoResult:
+def sync_one(repo: RepoSpec, settings: Settings, dev_branch: str | None) -> RepoResult:
     if not repo.enabled:
         return RepoResult("skipped", "disabled in config")
     fork_meta = repo_metadata(repo.fork)
@@ -245,7 +243,7 @@ def sync_one(repo: RepoSpec, settings: Settings) -> RepoResult:
         upstream=upstream,
         target_branch=target_branch,
         upstream_branch=upstream_branch,
-        dev_branch=repo.dev_branch or settings.dev_branch,
+        dev_branch=dev_branch,
     )
     return sync_repository(resolved, settings.dry_run)
 
@@ -447,7 +445,14 @@ def read_bool(raw: dict[Any, Any], key: str, default: bool, name: str) -> bool:
     return value
 
 
-def parse_config(path: Path) -> tuple[Settings, tuple[RepoSpec, ...]]:
+def read_dev_branch() -> str | None:
+    raw = os.environ.get("FORK_SYNC_DEV_BRANCH")
+    if raw is None or not raw.strip():
+        return None
+    return validate_branch(raw.strip(), "FORK_SYNC_DEV_BRANCH")
+
+
+def parse_config(path: Path) -> tuple[Settings, tuple[RepoSpec, ...], str | None]:
     if not path.exists():
         raise SyncError(f"Config file not found: {path}")
     with path.open("r", encoding="utf-8") as handle:
@@ -478,10 +483,6 @@ def parse_config(path: Path) -> tuple[Settings, tuple[RepoSpec, ...]]:
 
     dry_run = read_bool(raw_settings, "dry_run", False, "settings.dry_run")
     discover = read_bool(raw_settings, "discover_forks", True, "settings.discover_forks")
-    raw_dev_branch = raw_settings.get("dev_branch")
-    dev_branch = (
-        validate_branch(raw_dev_branch, "settings.dev_branch") if raw_dev_branch is not None else None
-    )
 
     settings = Settings(
         owner=owner,
@@ -489,7 +490,6 @@ def parse_config(path: Path) -> tuple[Settings, tuple[RepoSpec, ...]]:
         discover_forks=discover,
         max_repos=max_repos,
         exclude=frozenset(x.lower() if "/" in x else f"{owner}/{x}".lower() for x in excluded),
-        dev_branch=dev_branch,
     )
 
     specs: list[RepoSpec] = []
@@ -504,19 +504,14 @@ def parse_config(path: Path) -> tuple[Settings, tuple[RepoSpec, ...]]:
         upstream = item.get("upstream")
         target_branch = item.get("target_branch")
         upstream_branch = item.get("upstream_branch")
-        raw_dev_branch = item.get("dev_branch")
         specs.append(RepoSpec(
             fork=fork,
             enabled=enabled,
             upstream=validate_repo_slug(upstream, "upstream") if upstream else None,
             target_branch=validate_branch(target_branch, "target_branch") if target_branch else None,
             upstream_branch=validate_branch(upstream_branch, "upstream_branch") if upstream_branch else None,
-            dev_branch=(
-                validate_branch(raw_dev_branch, f"repos[{fork}].dev_branch")
-                if raw_dev_branch is not None else None
-            ),
         ))
-    return settings, tuple(specs)
+    return settings, tuple(specs), read_dev_branch()
 
 
 def select_repos(settings: Settings, specs: tuple[RepoSpec, ...]) -> tuple[RepoSpec, ...]:
@@ -547,7 +542,7 @@ def main() -> int:
         return 2
 
     try:
-        settings, specs = parse_config(CONFIG_FILE)
+        settings, specs, dev_branch = parse_config(CONFIG_FILE)
     except Exception as exc:
         log(f"ERROR: {exc}")
         if not isinstance(exc, SyncError):
@@ -574,7 +569,7 @@ def main() -> int:
     for index, repo in enumerate(repos, start=1):
         log(f"\n[{index}/{len(repos)}] Processing {repo.fork}")
         try:
-            result = sync_one(repo, settings)
+            result = sync_one(repo, settings, dev_branch)
             counts[result.status] += 1
             rows.append({"repo": repo.fork, "status": result.status, "details": result.details})
             log(f"{result.status.upper()}: {result.details}")

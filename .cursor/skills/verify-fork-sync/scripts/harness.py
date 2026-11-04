@@ -34,6 +34,15 @@ EVIDENCE_BASE = REPO_ROOT / ".verify" / "evidence"
 TOKEN = "verify-token-not-a-secret"
 OWNER = "alice"
 MANAGER_REPO = f"{OWNER}/fork-sync-manager"
+# Pin transcripts were recorded against these settings. The repository file is
+# the live manager config, so launch and config --reset write this instead.
+BASELINE_CONFIG = """\
+settings:
+  dry_run: true
+  discover_forks: true
+  max_repos: 100
+  exclude: []
+"""
 
 SEED_REPOS: list[dict[str, Any]] = [
     {"full_name": "octo/widget", "default_branch": "main",
@@ -100,7 +109,7 @@ def base_env(run: dict[str, Any]) -> dict[str, str]:
     """Environment for every git and sync.py process: the scratch gitconfig only,
     and a dead proxy so any accidental https request to the real GitHub fails."""
     dropped = {
-        "FORK_SYNC_TOKEN", "FORK_SYNC_DEV_BRANCH",
+        "FORK_SYNC_TOKEN", "FORK_SYNC_DEV_BRANCH", "FORK_SYNC_REPOS",
         "GIT_DIR", "GIT_WORK_TREE", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
     }
     env = {
@@ -194,6 +203,10 @@ def write_text(path: Path, text: str) -> None:
         handle.write(text)
 
 
+def write_baseline_config(path: Path) -> None:
+    write_text(path, BASELINE_CONFIG)
+
+
 def work_dir(run: dict[str, Any], label: str) -> Path:
     path = Path(run["scratch"]) / "work" / f"{label}-{secrets.token_hex(3)}"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -262,7 +275,7 @@ def cmd_launch(args: argparse.Namespace) -> int:
     seed_repositories(run, env)
     seed = [{k: v for k, v in r.items() if k != "files"} for r in SEED_REPOS]
     (scratch / "seed.json").write_text(json.dumps({"repos": seed}, indent=2), encoding="utf-8")
-    shutil.copyfile(REPO_ROOT / "config" / "repos.yml", scratch / "root" / "config" / "repos.yml")
+    write_baseline_config(scratch / "root" / "config" / "repos.yml")
 
     log = (scratch / "server.log").open("ab")
     flags = (subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS) if os.name == "nt" else 0
@@ -291,7 +304,7 @@ def cmd_launch(args: argparse.Namespace) -> int:
     print(f"scratch:   {scratch}")
     print(f"evidence:  {evidence}")
     print("repos:     " + ", ".join(r["full_name"] for r in SEED_REPOS))
-    print("config:    copy of config/repos.yml (dry_run as shipped); change it with `config`")
+    print("config:    harness baseline (dry_run: true); change it with `config`")
     print("READY")
     return 0
 
@@ -341,7 +354,7 @@ def cmd_config(args: argparse.Namespace) -> int:
     run = load_run(args.run)
     path = Path(run["scratch"]) / "root" / "config" / "repos.yml"
     if args.reset:
-        shutil.copyfile(REPO_ROOT / "config" / "repos.yml", path)
+        write_baseline_config(path)
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     settings = data.setdefault("settings", {}) or {}
     data["settings"] = settings
@@ -366,12 +379,23 @@ def cmd_config(args: argparse.Namespace) -> int:
 
 def cmd_variable(args: argparse.Namespace) -> int:
     run = load_run(args.run)
-    if args.dev_branch == "":
-        run.pop("fork_sync_dev_branch", None)
-    else:
-        run["fork_sync_dev_branch"] = args.dev_branch
+    if args.dev_branch is None and args.repos is None:
+        raise HarnessError("variable needs --dev-branch or --repos")
+    if args.dev_branch is not None:
+        if args.dev_branch == "":
+            run.pop("fork_sync_dev_branch", None)
+        else:
+            run["fork_sync_dev_branch"] = args.dev_branch
+    if args.repos is not None:
+        if args.repos == "":
+            run.pop("fork_sync_repos", None)
+        else:
+            run["fork_sync_repos"] = args.repos
     save_run(run)
-    print(f"FORK_SYNC_DEV_BRANCH={run.get('fork_sync_dev_branch', '')}")
+    if args.dev_branch is not None:
+        print(f"FORK_SYNC_DEV_BRANCH={run.get('fork_sync_dev_branch', '')}")
+    if args.repos is not None:
+        print(f"FORK_SYNC_REPOS={run.get('fork_sync_repos', '')}")
     return 0
 
 
@@ -530,6 +554,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         env["FORK_SYNC_TOKEN"] = args.token or TOKEN
     if "fork_sync_dev_branch" in run:
         env["FORK_SYNC_DEV_BRANCH"] = run["fork_sync_dev_branch"]
+    if "fork_sync_repos" in run:
+        env["FORK_SYNC_REPOS"] = run["fork_sync_repos"]
 
     before = snapshot(run)
     offset = len(api_log_lines(run))
@@ -548,6 +574,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     ]
     if "fork_sync_dev_branch" in run:
         command_lines.append(f"FORK_SYNC_DEV_BRANCH={run['fork_sync_dev_branch']}")
+    if "fork_sync_repos" in run:
+        command_lines.append(f"FORK_SYNC_REPOS={run['fork_sync_repos']}")
     write_text(step / "command.txt", "\n".join(command_lines) + "\n")
     write_text(step / "stdout.txt", proc.stdout)
     write_text(step / "stderr.txt", proc.stderr)
@@ -634,9 +662,9 @@ def main() -> int:
     p.add_argument("--run", required=True)
     p.set_defaults(func=cmd_doctor)
 
-    p = sub.add_parser("config", help="edit the run's copy of config/repos.yml")
+    p = sub.add_parser("config", help="edit the run's config/repos.yml")
     p.add_argument("--run", required=True)
-    p.add_argument("--reset", action="store_true", help="start again from the repo's config/repos.yml")
+    p.add_argument("--reset", action="store_true", help="start again from the harness baseline config")
     p.add_argument("--dry-run", choices=["true", "false"])
     p.add_argument("--discover", choices=["true", "false"])
     p.add_argument("--owner")
@@ -646,9 +674,10 @@ def main() -> int:
     p.add_argument("--repos-json", help="JSON list for the top-level `repos:` overrides")
     p.set_defaults(func=cmd_config)
 
-    p = sub.add_parser("variable", help="set FORK_SYNC_DEV_BRANCH for every later run of this scratch")
+    p = sub.add_parser("variable", help="set FORK_SYNC_DEV_BRANCH and FORK_SYNC_REPOS for later runs of this scratch")
     p.add_argument("--run", required=True)
-    p.add_argument("--dev-branch", required=True, help="branch name; an empty string clears it")
+    p.add_argument("--dev-branch", help="branch name; an empty string clears it")
+    p.add_argument("--repos", help="YAML or JSON list for FORK_SYNC_REPOS; an empty string clears it")
     p.set_defaults(func=cmd_variable)
 
     p = sub.add_parser("commit", help="push a commit to a branch of a scratch repo")

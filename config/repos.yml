@@ -1,7 +1,7 @@
 # 此配置默认自动发现 GitHub Token 授权的账号内所有 Fork。
 # 第一次部署请先使用 dry_run: true。确认列表正确后改为 false。
 settings:
-  dry_run: true
+  dry_run: false
   discover_forks: true
   max_repos: 100
 

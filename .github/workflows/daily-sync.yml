@@ -35,6 +35,7 @@ jobs:
         env:
           FORK_SYNC_TOKEN: ${{ secrets.FORK_SYNC_TOKEN }}
           FORK_SYNC_DEV_BRANCH: ${{ vars.FORK_SYNC_DEV_BRANCH }}
+          FORK_SYNC_REPOS: ${{ vars.FORK_SYNC_REPOS }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
         run: python scripts/sync.py

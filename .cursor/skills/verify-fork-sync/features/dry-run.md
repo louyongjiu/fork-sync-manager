@@ -19,7 +19,7 @@
 Preconditions:
 
 - 刚 launch 好的运行，`doctor` 健康。
-- 配置是仓库副本（`dry_run: true`）。如果改过，先执行 `& $py $h config --run $run --reset`。
+- 配置是 harness 基线（`dry_run: true`）。如果改过，先执行 `& $py $h config --run $run --reset`。
 
 - **基线。** 什么都不改，直接运行。命令：`& $py $h run --run $run --label dry-baseline`。预期 `sync.py exit code: 0`；`alice/widget` 和 `alice/gadget` 是 `UP_TO_DATE`；`alice/legacy` 是 `SKIPPED: Fork repository is archived`。
 - **上游新提交。** 上游维护者给 `octo/widget` 推送一个提交。命令：`& $py $h commit --run $run --repo octo/widget --file feature.txt --text "upstream feature 1"`。命令会打印新提交的 sha。

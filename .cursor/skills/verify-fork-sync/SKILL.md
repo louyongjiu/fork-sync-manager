@@ -68,7 +68,7 @@ $run = "<同一个 id>"
 | `alice/legacy` | `octo/legacy` 的 Fork，已归档 |
 | `alice/notes` | `alice` 自己的普通仓库，不是 Fork |
 
-管理账号固定为 `alice`：`GITHUB_REPOSITORY=alice/fork-sync-manager`，`GITHUB_REPOSITORY_OWNER=alice`。临时根目录里放的是仓库 `config/repos.yml` 的副本，状态与仓库里一致，也就是 `dry_run: true`。
+管理账号固定为 `alice`：`GITHUB_REPOSITORY=alice/fork-sync-manager`，`GITHUB_REPOSITORY_OWNER=alice`。临时根目录里的 `config/repos.yml` 由 harness 写成固定基线，`dry_run: true`、`discover_forks: true`、`max_repos: 100`、`exclude: []`。这次运行不读取仓库里的 `config/repos.yml`。
 
 ## Doctor
 
@@ -93,8 +93,8 @@ $run = "<同一个 id>"
 
 | 用户或外部动作 | 命令 |
 |---|---|
-| 修改管理仓库的 `config/repos.yml` | `config --dry-run true\|false`、`--exclude <名> ...`、`--owner <名>`、`--max-repos <n>`、`--discover true\|false`、`--settings-json '<JSON 对象>'`（原样合并进 `settings:`，用来写字符串布尔值或未知键）、`--repos-json '<JSON 列表>'`、`--reset`（重新复制仓库里的版本，可以和其他参数一起用） |
-| 设置开发分支 | `variable --dev-branch <名字>`。空字符串清除。这个值留在本次运行的状态里，之后每次 `run` 都作为 `FORK_SYNC_DEV_BRANCH` 传给 `scripts/sync.py`，并写进该步的 `command.txt` |
+| 修改本次运行的 `config/repos.yml` | `config --dry-run true\|false`、`--exclude <名> ...`、`--owner <名>`、`--max-repos <n>`、`--discover true\|false`、`--settings-json '<JSON 对象>'`（原样合并进 `settings:`，用来写字符串布尔值或未知键）、`--repos-json '<JSON 列表>'`（把 `repos:` 写进临时文件，用来看到这个键被拒绝）、`--reset`（写回 harness 基线，可以和其他参数一起用。不清除 `FORK_SYNC_REPOS`） |
+| 设置开发分支和按仓库条目 | `variable --dev-branch <名字>`、`variable --repos '<YAML 或 JSON 列表>'`。空字符串清除对应的那一个。两个值都留在本次运行的状态里，之后每次 `run` 都作为 `FORK_SYNC_DEV_BRANCH` 和 `FORK_SYNC_REPOS` 传给 `scripts/sync.py`，并写进该步的 `command.txt` |
 | 上游维护者或用户推送提交 | `commit --repo <owner/repo> [--branch <分支>] [--from <已有分支>] --file <路径> --text <整行内容>`（文件整体替换为这一行） |
 | 列出 Pull Request | `pr list` |
 | 关闭 Pull Request | `pr close --repo <owner/repo> --number <编号>` |
@@ -115,7 +115,7 @@ harness 本身的退出码等于 `sync.py` 的退出码；harness 自己出错�
 
 ## 行为快照（重构时用）
 
-`scripts/pin.py` 把 22 个固定场景在真实 `sync.py` 上各跑一遍，记成一份规范化文本。每个场景单独 launch 一次运行，4 个并行，结束后自动 cleanup，整体约 3 分钟。场景覆盖：
+`scripts/pin.py` 把 24 个固定场景在真实 `sync.py` 上各跑一遍，记成一份规范化文本。每个场景单独 launch 一次运行，4 个并行，结束后自动 cleanup，整体约 3 分钟。场景覆盖：
 - 试运行，其中冲突那一步退出码是 `1`；
 - Fork 自己有提交时生成合并提交，再运行变为 `up_to_date`；
 - 纯镜像 Fork 快进，目标和上游指向同一个提交；
@@ -136,7 +136,9 @@ harness 本身的退出码等于 `sync.py` 的退出码；harness 自己出错�
 - `FORK_SYNC_DEV_BRANCH` 和某个 Fork 的目标分支同名时，该仓库失败，其他仓库继续；
 - 试运行只在详情里写出将要创建的开发分支和将要打开的 Pull Request，请求只有 `GET`；
 - 不合法的 `FORK_SYNC_DEV_BRANCH` 以退出码 `2` 结束；
-- 配置文件里的 `dev_branch` 是未知键，以退出码 `2` 结束。
+- 配置文件 `settings` 里的 `dev_branch` 是未知键，以退出码 `2` 结束。`FORK_SYNC_REPOS` 里的 `dev_branch` 同样是未知键；
+- `config/repos.yml` 里的 `repos`、无法解析的 `FORK_SYNC_REPOS`、以及不是列表的 `FORK_SYNC_REPOS`，都以退出码 `2` 结束，并且不请求 GitHub API；
+- 多行 YAML 的 `FORK_SYNC_REPOS` 可以覆盖单个 Fork 的 `upstream_branch`。
 
 ```powershell
 & $py .cursor\skills\verify-fork-sync\scripts\pin.py --out .verify\pin\before.txt
@@ -156,7 +158,7 @@ commit 的 sha 每次运行都不同，所以每个场景里按首次出现的�
 
 证据目录是 `.verify\evidence\<run id>\`，已经在 `.gitignore` 中。每次 `run` 写入一个 `NN-run-<标签>\` 子目录，包含：
 
-- `command.txt`：工作目录、命令行、所用 `sync.py` 的路径和 sha256。本次运行设了 `FORK_SYNC_DEV_BRANCH` 时，文件末尾还有这一行变量
+- `command.txt`：工作目录、命令行、所用 `sync.py` 的路径和 sha256。本次运行设了 `FORK_SYNC_DEV_BRANCH` 或 `FORK_SYNC_REPOS` 时，文件末尾还有对应的变量行
 - `repos.yml`：本次运行使用的配置
 - `stdout.txt`、`stderr.txt`、`exit-code.txt`
 - `step-summary.md`：Actions 任务摘要的原文

@@ -671,7 +671,7 @@ def main() -> int:
     p.add_argument("--max-repos", type=int)
     p.add_argument("--exclude", nargs="*")
     p.add_argument("--settings-json", help="JSON object merged into `settings:` as written, e.g. '{\"dry_run\": \"false\"}'")
-    p.add_argument("--repos-json", help="JSON list for the top-level `repos:` overrides")
+    p.add_argument("--repos-json", help="JSON list written as the top-level `repos:` key")
     p.set_defaults(func=cmd_config)
 
     p = sub.add_parser("variable", help="set FORK_SYNC_DEV_BRANCH and FORK_SYNC_REPOS for later runs of this scratch")

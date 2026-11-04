@@ -452,6 +452,51 @@ def read_dev_branch() -> str | None:
     return validate_branch(raw.strip(), "FORK_SYNC_DEV_BRANCH")
 
 
+def yaml_error_reason(exc: yaml.YAMLError) -> str:
+    # str(YAMLError) repeats the source snippet across several lines.
+    problem = getattr(exc, "problem", None)
+    if isinstance(problem, str) and problem.strip():
+        return " ".join(problem.split())
+    text = " ".join(str(exc).split())
+    return text or exc.__class__.__name__
+
+
+def parse_repo_entries(raw_repos: list[Any], owner: str) -> tuple[RepoSpec, ...]:
+    specs: list[RepoSpec] = []
+    for item in raw_repos:
+        if not isinstance(item, dict):
+            raise SyncError("Each FORK_SYNC_REPOS entry must be a YAML object")
+        fork = validate_repo_slug(item.get("fork"), "fork")
+        if fork.split("/", 1)[0].lower() != owner.lower():
+            raise SyncError(f"Configured repository does not belong to {owner}: {fork}")
+        reject_unknown_keys(item, RepoSpec, f"FORK_SYNC_REPOS[{fork}]")
+        enabled = read_bool(item, "enabled", True, f"FORK_SYNC_REPOS[{fork}].enabled")
+        upstream = item.get("upstream")
+        target_branch = item.get("target_branch")
+        upstream_branch = item.get("upstream_branch")
+        specs.append(RepoSpec(
+            fork=fork,
+            enabled=enabled,
+            upstream=validate_repo_slug(upstream, "upstream") if upstream else None,
+            target_branch=validate_branch(target_branch, "target_branch") if target_branch else None,
+            upstream_branch=validate_branch(upstream_branch, "upstream_branch") if upstream_branch else None,
+        ))
+    return tuple(specs)
+
+
+def read_repo_specs(owner: str) -> tuple[RepoSpec, ...]:
+    raw = os.environ.get("FORK_SYNC_REPOS")
+    if raw is None or not raw.strip():
+        return ()
+    try:
+        loaded = yaml.safe_load(raw)
+    except yaml.YAMLError as exc:
+        raise SyncError(f"FORK_SYNC_REPOS is not valid YAML: {yaml_error_reason(exc)}") from exc
+    if not isinstance(loaded, list):
+        raise SyncError("FORK_SYNC_REPOS must be a YAML list")
+    return parse_repo_entries(loaded, owner)
+
+
 def parse_config(path: Path) -> tuple[Settings, tuple[RepoSpec, ...], str | None]:
     if not path.exists():
         raise SyncError(f"Config file not found: {path}")
@@ -460,12 +505,15 @@ def parse_config(path: Path) -> tuple[Settings, tuple[RepoSpec, ...], str | None
     if not isinstance(config, dict):
         raise SyncError("config/repos.yml must contain a YAML object")
 
+    unknown = set(config) - {"settings"}
+    if unknown:
+        raise SyncError(
+            f"Unknown keys in config/repos.yml: {', '.join(sorted(map(str, unknown)))}"
+        )
+
     raw_settings = config.get("settings") or {}
-    raw_repos = config.get("repos") or []
     if not isinstance(raw_settings, dict):
         raise SyncError("settings must be a YAML object")
-    if not isinstance(raw_repos, list):
-        raise SyncError("repos must be a YAML list")
     reject_unknown_keys(raw_settings, Settings, "settings")
 
     owner = (raw_settings.get("owner") or os.environ.get("GITHUB_REPOSITORY_OWNER") or
@@ -491,27 +539,7 @@ def parse_config(path: Path) -> tuple[Settings, tuple[RepoSpec, ...], str | None
         max_repos=max_repos,
         exclude=frozenset(x.lower() if "/" in x else f"{owner}/{x}".lower() for x in excluded),
     )
-
-    specs: list[RepoSpec] = []
-    for item in raw_repos:
-        if not isinstance(item, dict):
-            raise SyncError("Each repos entry must be a YAML object")
-        fork = validate_repo_slug(item.get("fork"), "fork")
-        if fork.split("/", 1)[0].lower() != owner.lower():
-            raise SyncError(f"Configured repository does not belong to {owner}: {fork}")
-        reject_unknown_keys(item, RepoSpec, f"repos[{fork}]")
-        enabled = read_bool(item, "enabled", True, f"repos[{fork}].enabled")
-        upstream = item.get("upstream")
-        target_branch = item.get("target_branch")
-        upstream_branch = item.get("upstream_branch")
-        specs.append(RepoSpec(
-            fork=fork,
-            enabled=enabled,
-            upstream=validate_repo_slug(upstream, "upstream") if upstream else None,
-            target_branch=validate_branch(target_branch, "target_branch") if target_branch else None,
-            upstream_branch=validate_branch(upstream_branch, "upstream_branch") if upstream_branch else None,
-        ))
-    return settings, tuple(specs), read_dev_branch()
+    return settings, read_repo_specs(settings.owner), read_dev_branch()
 
 
 def select_repos(settings: Settings, specs: tuple[RepoSpec, ...]) -> tuple[RepoSpec, ...]:

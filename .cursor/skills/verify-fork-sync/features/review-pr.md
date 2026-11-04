@@ -16,12 +16,12 @@
 - `dev-same-as-target`：`FORK_SYNC_DEV_BRANCH` 和目标分支同名。该仓库 `FAILED`，详情含 `is the target branch of`。它的分支不变。同一次运行里其他 Fork 继续。退出码 `1`。
 - `dev-dry-run`：详情含 `would create` 和 `would open a PR from <目标分支> into <开发分支>`。请求的 method 都是 `GET`。开发分支没有被创建。
 - `dev-invalid`：`FORK_SYNC_DEV_BRANCH` 不是合法分支名。退出码 `2`，日志含 `Invalid FORK_SYNC_DEV_BRANCH`。
-- `dev-config-keys`：配置文件里写了 `dev_branch`。退出码 `2`。`settings` 里写时报 `Unknown keys in settings: dev_branch`。`repos` 里写时报 `Unknown keys in repos[alice/widget]: dev_branch`。
+- `dev-config-keys`：配置文件的 `settings` 里写了 `dev_branch` 时报 `Unknown keys in settings: dev_branch`。`FORK_SYNC_REPOS` 里写了 `dev_branch` 时报 `Unknown keys in FORK_SYNC_REPOS[alice/widget]: dev_branch`。退出码都是 `2`。
 
 ## How to get to it (user POV)
 
 - 在管理仓库 `Settings → Secrets and variables → Actions → Variables` 新建 `FORK_SYNC_DEV_BRANCH`，值填开发分支名。用 Variables，不用 Secrets，否则 Actions 日志会把分支名打成 `***`。`dry_run` 设为 `false`，提交后手动或定时运行。
-- `alice/gadget` 的默认分支是 `develop`。变量设为 `develop` 时，这个仓库会同名失败。要单独看别的 Fork，把它写进 `exclude`，或给它写别的 `target_branch`。
+- `alice/gadget` 的默认分支是 `develop`。变量设为 `develop` 时，这个仓库会同名失败。要单独看别的 Fork，把它写进 `exclude`，或在 `FORK_SYNC_REPOS` 里给它写别的 `target_branch`。
 
 ## Driving it with harness.py
 
@@ -42,7 +42,7 @@ Preconditions:
 - **同名（`dev-same-as-target`）。** 新 launch。命令：`& $py $h config --run $run --dry-run false`，`& $py $h variable --run $run --dev-branch develop`，给 `octo/widget` 和 `octo/gadget` 各推一个提交，然后 `run`。预期退出码 `1`。`alice/gadget` 为 `FAILED`，详情含 `FORK_SYNC_DEV_BRANCH 'develop' is the target branch of alice/gadget`。`alice/gadget` 的 `develop` 仍是运行前的提交。`alice/widget` 创建 `develop` 并打开 `PR #1`。
 - **试运行（`dev-dry-run`）。** 新 launch。命令：`& $py $h config --run $run --dry-run true --exclude gadget`，`& $py $h variable --run $run --dev-branch develop`，上游提交，然后 `run`。预期 `DRY_RUN`，详情含 `would create develop at` 和 `would open a PR from main into develop`。`api-requests.jsonl` 里每条 method 都是 `GET`。`alice/widget` 没有 `develop`。
 - **非法名字（`dev-invalid`）。** 新 launch。命令：`& $py $h variable --run $run --dev-branch bad..name`，然后 `run`。预期退出码 `2`，stdout 含 `Invalid FORK_SYNC_DEV_BRANCH: 'bad..name'`。
-- **配置文件里的键（`dev-config-keys`）。** 新 launch。命令：`& $py $h config --run $run --settings-json '{"dev_branch": "develop"}'`，然后 `run`。预期退出码 `2`，stdout 含 `Unknown keys in settings: dev_branch`。再执行 `& $py $h config --run $run --reset --repos-json '[{"fork": "alice/widget", "dev_branch": "develop"}]'`，然后 `run`。预期退出码 `2`，stdout 含 `Unknown keys in repos[alice/widget]: dev_branch`。
+- **配置文件里的键（`dev-config-keys`）。** 新 launch。命令：`& $py $h config --run $run --settings-json '{"dev_branch": "develop"}'`，然后 `run`。预期退出码 `2`，stdout 含 `Unknown keys in settings: dev_branch`。再执行 `& $py $h config --run $run --reset`，`& $py $h variable --run $run --repos '[{"fork": "alice/widget", "dev_branch": "develop"}]'`，然后 `run`。预期退出码 `2`，stdout 含 `Unknown keys in FORK_SYNC_REPOS[alice/widget]: dev_branch`。
 
 ## Gotchas
 

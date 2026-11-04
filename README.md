@@ -15,15 +15,16 @@
    - 如果私有 upstream 不属于此账号，请确认 Token 对这些上游是否有访问权限；跨组织私有 upstream 可能需要改用 GitHub App 认证方案。
 4. 在**管理仓库** `Settings → Secrets and variables → Actions → New repository secret` 增加 `FORK_SYNC_TOKEN`，值填刚才的 Token；**不要把 Token 放进文件**。
 5. 如需把目标分支的更新送进开发分支，在**管理仓库** `Settings → Secrets and variables → Actions → Variables` 新建仓库变量 `FORK_SYNC_DEV_BRANCH`，值填开发分支名。用 Variables 而不是 Secrets，因为 Actions 会把 Secret 的值在日志里打成 `***`，状态行里的分支名会被盖住。
-6. 第一次运行时保持 `config/repos.yml` 中的 `dry_run: true`。进入管理仓库 `Actions → Daily Upstream Sync → Run workflow` 手动执行，在运行报告里检查选中的 Fork、上游和分支。试运行也会在临时目录里真实合并一次，有冲突的 Fork 记为 `conflict`，这次运行会显示失败。按「处理冲突」解决，或先给它写 `enabled: false`。
-7. 确认正确后将 `dry_run: false`，提交，手动执行一次。以后每天自动运行（workflow 配置为每天 03:17 UTC）。
+6. 如需按仓库覆盖上游或分支，或停用某个 Fork，在**管理仓库** `Settings → Secrets and variables → Actions → Variables` 新建仓库变量 `FORK_SYNC_REPOS`，值填多行 YAML 列表。每一项的键见「配置」。不设置、留空或只含空白时，没有这些条目。用 Variables 而不是 Secrets，因为 Actions 会把 Secret 的值在日志里打成 `***`，状态行里的仓库名和分支名会被盖住。
+7. 第一次运行时保持 `config/repos.yml` 中的 `dry_run: true`。进入管理仓库 `Actions → Daily Upstream Sync → Run workflow` 手动执行，在运行报告里检查选中的 Fork、上游和分支。试运行也会在临时目录里真实合并一次，有冲突的 Fork 记为 `conflict`，这次运行会显示失败。按「处理冲突」解决，或先在 `FORK_SYNC_REPOS` 里给它写 `enabled: false`。
+8. 确认正确后将 `dry_run: false`，提交，手动执行一次。以后每天自动运行（workflow 配置为每天 03:17 UTC）。
 
 ## 运行流程
 
 workflow 每天 03:17 UTC 执行一次 `python scripts/sync.py`，也可以在 `Actions → Daily Upstream Sync → Run workflow` 手动执行。一次运行按下面的顺序进行：
 
-1. 检查 `FORK_SYNC_TOKEN`、`FORK_SYNC_DEV_BRANCH` 和 `config/repos.yml`。缺少 Token、`FORK_SYNC_DEV_BRANCH` 不是合法分支名，或配置写错时，以退出码 `2` 结束，不处理任何仓库。
-2. 选出要处理的仓库：自动发现的 Fork 加上 `repos` 里的项，去掉 `exclude`，再检查 `max_repos`。超过 `max_repos` 或一个都没选中时，以退出码 `2` 结束。列出 Fork 时出错，以退出码 `1` 结束。
+1. 检查 `FORK_SYNC_TOKEN`、`FORK_SYNC_DEV_BRANCH`、`FORK_SYNC_REPOS` 和 `config/repos.yml`。缺少 Token、`FORK_SYNC_DEV_BRANCH` 不是合法分支名、`FORK_SYNC_REPOS` 无法解析，或配置写错时，以退出码 `2` 结束，不处理任何仓库。
+2. 选出要处理的仓库：自动发现的 Fork 加上 `FORK_SYNC_REPOS` 里的项，去掉 `exclude`，再检查 `max_repos`。超过 `max_repos` 或一个都没选中时，以退出码 `2` 结束。列出 Fork 时出错，以退出码 `1` 结束。
 3. 逐个处理仓库。一个仓库出错只记为 `failed`，其他仓库照常处理。
 4. 在运行摘要里列出每个仓库的状态和详情。有仓库记为 `failed` 或 `conflict` 时退出码为 `1`，否则为 `0`。
 
@@ -65,14 +66,14 @@ workflow 每天 03:17 UTC 执行一次 `python scripts/sync.py`，也可以在 `
 - 脚本只在开发分支还不存在时创建它，之后不把新提交直接推上开发分支。开发分支上的新提交来自审查 Pull Request，或者来自你自己的推送。
 - 合并审查 Pull Request 时选择 **Create a merge commit**。Squash 合并会让下一次 Pull Request 再次列出同样的提交。
 - 要让别人先看过再合并，给开发分支加上需要审查的保护规则。GitHub 不允许 Pull Request 的作者批准自己的 Pull Request。这些 Pull Request 的作者是这个 PAT 的所有者，所以要求批准时需要另一位开发者，或者由管理员绕过。
-- 要暂停某个 Fork，在 `repos` 里给它写 `enabled: false`，之后的运行把它记为 `skipped`。处理完后删掉这一项，或改回 `enabled: true`。
+- 要暂停某个 Fork，在 `FORK_SYNC_REPOS` 里给它写 `enabled: false`，之后的运行把它记为 `skipped`。处理完后删掉这一项，或改回 `enabled: true`。
 - 两边历史不相关时，Git 无法做普通 merge，该仓库记为 `failed`。这时检查 `upstream` 是否指向正确的源仓库。
 - 脚本逐个处理仓库，每个仓库都要拉取目标分支和上游分支的完整历史。仓库多或体积大时，要留意 workflow 的 90 分钟超时和 GitHub API 限速。
 - Fine-grained PAT 可能过期，过期后需要更新管理仓库 Secret。
 
-## 配置（只需一个文件）
+## 配置
 
-`config/repos.yml`：
+`config/repos.yml` 只放 `settings`：
 
 ```yaml
 settings:
@@ -80,32 +81,32 @@ settings:
   discover_forks: true
   max_repos: 100
   exclude: []
-repos: []
 ```
 
 `settings` 只接受上面这些键，外加可选的 `owner`。`dry_run` 和 `discover_forks` 必须写 `true` 或 `false`。省略 `dry_run` 时按 `false` 处理，脚本会真实推送。`max_repos` 是 1 到 1000 的整数，默认 `100`。`exclude` 的每一项可以只写仓库名，也可以写 `owner/repo`。
 
 只同步某些 Fork：在 `settings.exclude` 列出其他仓库，或只在 PAT 中授权指定仓库。`max_repos` 限制的是去掉 `exclude` 之后最终要处理的仓库数。
 
-针对某个 Fork 覆盖上游/分支，或停用它：
+按仓库覆盖上游或分支，或停用某个 Fork，把下面的列表写进仓库变量 `FORK_SYNC_REPOS`：
 
 ```yaml
-repos:
-  - fork: YOUR_NAME/special-fork
-    upstream: SOURCE_OWNER/special-upstream
-    target_branch: main
-    upstream_branch: develop
-  - fork: YOUR_NAME/paused-fork
-    enabled: false
+- fork: YOUR_NAME/special-fork
+  upstream: SOURCE_OWNER/special-upstream
+  target_branch: main
+  upstream_branch: develop
+- fork: YOUR_NAME/paused-fork
+  enabled: false
 ```
 
-`repos` 的每一项只接受 `fork`、`enabled`、`upstream`、`target_branch`、`upstream_branch`。`fork` 必须属于 `settings.owner` 这个账号。`enabled` 必须写 `true` 或 `false`。`enabled: false` 的仓库报 `skipped`，不调用 GitHub API。`upstream` 必须是 `owner/repo` 格式，分支名必须是合法的 Git 分支名。
+`FORK_SYNC_REPOS` 的每一项只接受 `fork`、`enabled`、`upstream`、`target_branch`、`upstream_branch`。`fork` 必须属于 `settings.owner` 这个账号。`enabled` 必须写 `true` 或 `false`。`enabled: false` 的仓库报 `skipped`，不调用 GitHub API。`upstream` 必须是 `owner/repo` 格式，分支名必须是合法的 Git 分支名。不设置、留空或只含空白时，没有这些条目。写成 JSON 列表也可以。
 
-`FORK_SYNC_DEV_BRANCH` 是开发分支的名字，每个 Fork 用同一个值。不设置、留空或只含空白时，脚本只更新目标分支，不处理审查 Pull Request。某个 Fork 的目标分支和这个变量同名时，该仓库记为 `failed`，详情是 `FORK_SYNC_DEV_BRANCH '<名字>' is the target branch of <fork>; set target_branch for this repo or exclude it`。给这个仓库写 `target_branch`，或把它放进 `exclude`。其他仓库照常处理。
+修改变量不会留在 git 历史里，写错时下一次运行以退出码 `2` 结束。
 
-可以在 `repos` 显式加入不是 Fork 的镜像仓库。这类仓库没有 GitHub parent，必须写 `upstream`，否则该仓库记为 `failed`。
+`FORK_SYNC_DEV_BRANCH` 是开发分支的名字，每个 Fork 用同一个值。不设置、留空或只含空白时，脚本只更新目标分支，不处理审查 Pull Request。某个 Fork 的目标分支和这个变量同名时，该仓库记为 `failed`，详情是 `FORK_SYNC_DEV_BRANCH '<名字>' is the target branch of <fork>; set target_branch for this repo or exclude it`。在 `FORK_SYNC_REPOS` 里给这个仓库写 `target_branch`，或把它放进 `exclude`。其他仓库照常处理。
 
-任务启动时先检查整个配置文件，再调用 GitHub API。写错的键名（例如 `dryrun`、`upstream_brnach`）、写成字符串的 `"false"`、不合法的分支名、不属于 `owner` 的 `fork`，都会让任务以退出码 `2` 结束，不处理任何仓库。去掉 `exclude` 之后仓库数超过 `max_repos`，或一个仓库都没有选中，也以退出码 `2` 结束。
+可以在 `FORK_SYNC_REPOS` 显式加入不是 Fork 的镜像仓库。这类仓库没有 GitHub parent，必须写 `upstream`，否则该仓库记为 `failed`。
+
+任务启动时先检查 `config/repos.yml` 和 `FORK_SYNC_REPOS`，再调用 GitHub API。写错的键名（例如 `dryrun`、`upstream_brnach`）、写成字符串的 `"false"`、不合法的分支名、不属于 `owner` 的 `fork`，以及 `config/repos.yml` 里除 `settings` 以外的顶层键，都会让任务以退出码 `2` 结束，不处理任何仓库。去掉 `exclude` 之后仓库数超过 `max_repos`，或一个仓库都没有选中，也以退出码 `2` 结束。
 
 ## 每日结果
 

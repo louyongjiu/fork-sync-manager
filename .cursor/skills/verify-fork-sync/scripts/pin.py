@@ -47,6 +47,10 @@ def variable(name: str) -> tuple[str, list[str]]:
     return ("variable", ["--dev-branch", name])
 
 
+def repos_variable(text: str) -> tuple[str, list[str]]:
+    return ("variable", ["--repos", text])
+
+
 SCENARIOS: dict[str, list[tuple]] = {
     "dry-run": [
         run("baseline"),
@@ -84,33 +88,35 @@ SCENARIOS: dict[str, list[tuple]] = {
         run("resolved"),
     ],
     "exclude-disable": [
-        ("config", ["--exclude", "widget", "--repos-json", '[{"fork": "alice/gadget", "enabled": false}]']),
+        ("config", ["--exclude", "widget"]),
+        repos_variable('[{"fork": "alice/gadget", "enabled": false}]'),
         run("exclude-disable"),
     ],
     "override-branch": [
         commit("octo/gadget", "r.txt", "release only", "--branch", "release", "--from", "develop"),
-        ("config", ["--dry-run", "false", "--repos-json", '[{"fork": "alice/gadget", "upstream_branch": "release"}]']),
+        ("config", ["--dry-run", "false"]),
+        repos_variable('[{"fork": "alice/gadget", "upstream_branch": "release"}]'),
         run("override"),
     ],
     "owner-mismatch": [
-        ("config", ["--repos-json", '[{"fork": "bob/widget"}]']),
+        repos_variable('[{"fork": "bob/widget"}]'),
         run("owner-mismatch"),
     ],
     "no-token": [run("no-token", "--no-token")],
     "bad-token": [run("bad-token", "--token", "not-the-token")],
     "disabled-unreachable": [
-        ("config", ["--repos-json", '[{"fork": "alice/ghost", "enabled": false}]']),
+        repos_variable('[{"fork": "alice/ghost", "enabled": false}]'),
         run("disabled-unreachable"),
     ],
     "unknown-keys": [
         commit("octo/gadget", "r.txt", "release only", "--branch", "release", "--from", "develop"),
-        ("config", ["--settings-json", '{"dryrun": true}',
-                    "--repos-json", '[{"fork": "alice/gadget", "upstream_brnach": "release"}]']),
+        ("config", ["--settings-json", '{"dryrun": true}']),
+        repos_variable('[{"fork": "alice/gadget", "upstream_brnach": "release"}]'),
         run("unknown-keys"),
     ],
     "string-bools": [
-        ("config", ["--settings-json", '{"dry_run": "false"}',
-                    "--repos-json", '[{"fork": "alice/gadget", "enabled": "false"}]']),
+        ("config", ["--settings-json", '{"dry_run": "false"}']),
+        repos_variable('[{"fork": "alice/gadget", "enabled": "false"}]'),
         commit("octo/gadget", "g.txt", "gadget 1"),
         run("string-bools"),
     ],
@@ -178,8 +184,24 @@ SCENARIOS: dict[str, list[tuple]] = {
     "dev-config-keys": [
         ("config", ["--settings-json", '{"dev_branch": "develop"}']),
         run("settings-key"),
-        ("config", ["--reset", "--repos-json", '[{"fork": "alice/widget", "dev_branch": "develop"}]']),
+        ("config", ["--reset"]),
+        repos_variable('[{"fork": "alice/widget", "dev_branch": "develop"}]'),
         run("repos-key"),
+    ],
+    "repos-variable-errors": [
+        ("config", ["--repos-json", '[{"fork": "alice/widget"}]']),
+        run("file-repos-key"),
+        ("config", ["--reset"]),
+        repos_variable("fork: [unclosed"),
+        run("bad-yaml"),
+        repos_variable('{"fork": "alice/widget"}'),
+        run("not-a-list"),
+    ],
+    "repos-variable-multiline": [
+        commit("octo/gadget", "r.txt", "release only", "--branch", "release", "--from", "develop"),
+        ("config", ["--dry-run", "false"]),
+        repos_variable("- fork: alice/gadget\n  upstream_branch: release"),
+        run("override"),
     ],
 }
 

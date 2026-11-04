@@ -16,7 +16,10 @@ settings:
 
 # 通常不需要修改下面这一段，程序会读取 Fork 自己的 parent 和默认分支。
 # 特殊情况下，可在这里覆盖上游或分支；也可显式添加非标准镜像仓库。
-repos: []
+repos:
+  - fork: louyongjiu/yudao-cloud
+    target_branch: master-jdk25
+    upstream_branch: master-jdk25
 # repos:
 #   - fork: YOUR_GITHUB_USERNAME/project-b
 #     upstream: OTHER_OWNER/project-b

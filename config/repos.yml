@@ -16,7 +16,7 @@ settings:
 
   # 开发分支。填写后，目标分支的更新通过 Pull Request 进入该分支。
   # 单个仓库可在下面的 repos 里用同名键覆盖。
-  # dev_branch: develop
+  dev_branch: nines-cloud
 
 # 通常不需要修改下面这一段，程序会读取 Fork 自己的 parent 和默认分支。
 # 特殊情况下，可在这里覆盖上游或分支；也可显式添加非标准镜像仓库。

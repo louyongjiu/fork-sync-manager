@@ -99,7 +99,10 @@ def remove_tree(path: Path) -> None:
 def base_env(run: dict[str, Any]) -> dict[str, str]:
     """Environment for every git and sync.py process: the scratch gitconfig only,
     and a dead proxy so any accidental https request to the real GitHub fails."""
-    dropped = {"FORK_SYNC_TOKEN", "GIT_DIR", "GIT_WORK_TREE", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"}
+    dropped = {
+        "FORK_SYNC_TOKEN", "FORK_SYNC_DEV_BRANCH",
+        "GIT_DIR", "GIT_WORK_TREE", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+    }
     env = {
         key: value for key, value in os.environ.items()
         if key.upper() not in dropped
@@ -361,6 +364,17 @@ def cmd_config(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_variable(args: argparse.Namespace) -> int:
+    run = load_run(args.run)
+    if args.dev_branch == "":
+        run.pop("fork_sync_dev_branch", None)
+    else:
+        run["fork_sync_dev_branch"] = args.dev_branch
+    save_run(run)
+    print(f"FORK_SYNC_DEV_BRANCH={run.get('fork_sync_dev_branch', '')}")
+    return 0
+
+
 def cmd_commit(args: argparse.Namespace) -> int:
     run = load_run(args.run)
     env = base_env(run)
@@ -514,6 +528,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     })
     if not args.no_token:
         env["FORK_SYNC_TOKEN"] = args.token or TOKEN
+    if "fork_sync_dev_branch" in run:
+        env["FORK_SYNC_DEV_BRANCH"] = run["fork_sync_dev_branch"]
 
     before = snapshot(run)
     offset = len(api_log_lines(run))
@@ -524,8 +540,15 @@ def cmd_run(args: argparse.Namespace) -> int:
     requests = api_log_lines(run)[offset:]
 
     shutil.copyfile(root / "config" / "repos.yml", step / "repos.yml")
-    write_text(step / "command.txt", f"cwd: {root}\n{' '.join(command)}\nsync.py source: {source}\n"
-                                     f"sync.py sha256: {sync_sha}\n")
+    command_lines = [
+        f"cwd: {root}",
+        " ".join(command),
+        f"sync.py source: {source}",
+        f"sync.py sha256: {sync_sha}",
+    ]
+    if "fork_sync_dev_branch" in run:
+        command_lines.append(f"FORK_SYNC_DEV_BRANCH={run['fork_sync_dev_branch']}")
+    write_text(step / "command.txt", "\n".join(command_lines) + "\n")
     write_text(step / "stdout.txt", proc.stdout)
     write_text(step / "stderr.txt", proc.stderr)
     write_text(step / "exit-code.txt", f"{proc.returncode}\n")
@@ -622,6 +645,11 @@ def main() -> int:
     p.add_argument("--settings-json", help="JSON object merged into `settings:` as written, e.g. '{\"dry_run\": \"false\"}'")
     p.add_argument("--repos-json", help="JSON list for the top-level `repos:` overrides")
     p.set_defaults(func=cmd_config)
+
+    p = sub.add_parser("variable", help="set FORK_SYNC_DEV_BRANCH for every later run of this scratch")
+    p.add_argument("--run", required=True)
+    p.add_argument("--dev-branch", required=True, help="branch name; an empty string clears it")
+    p.set_defaults(func=cmd_variable)
 
     p = sub.add_parser("commit", help="push a commit to a branch of a scratch repo")
     p.add_argument("--run", required=True)

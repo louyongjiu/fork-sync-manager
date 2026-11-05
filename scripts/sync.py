@@ -102,9 +102,8 @@ def api_request(method: str, path: str, payload: dict[str, Any] | None = None) -
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": API_VERSION,
         "User-Agent": "fork-sync-manager",
+        "Authorization": f"Bearer {TOKEN}",
     }
-    if TOKEN:
-        headers["Authorization"] = f"Bearer {TOKEN}"
     if body is not None:
         headers["Content-Type"] = "application/json"
 
@@ -151,11 +150,10 @@ def git_env() -> dict[str, str]:
     env = os.environ.copy()
     env["GIT_TERMINAL_PROMPT"] = "0"
     # Supply the token through an HTTP extraheader instead of embedding it in remote URLs.
-    if TOKEN:
-        basic = base64.b64encode(f"x-access-token:{TOKEN}".encode("utf-8")).decode("ascii")
-        env["GIT_CONFIG_COUNT"] = "1"
-        env["GIT_CONFIG_KEY_0"] = "http.https://github.com/.extraheader"
-        env["GIT_CONFIG_VALUE_0"] = f"AUTHORIZATION: basic {basic}"
+    basic = base64.b64encode(f"x-access-token:{TOKEN}".encode("utf-8")).decode("ascii")
+    env["GIT_CONFIG_COUNT"] = "1"
+    env["GIT_CONFIG_KEY_0"] = "http.https://github.com/.extraheader"
+    env["GIT_CONFIG_VALUE_0"] = f"AUTHORIZATION: basic {basic}"
     return env
 
 

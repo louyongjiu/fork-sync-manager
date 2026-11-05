@@ -528,8 +528,9 @@ def parse_config(path: Path) -> tuple[Settings, tuple[RepoSpec, ...], str | None
         raise SyncError("settings must be a YAML object")
     reject_unknown_keys(raw_settings, Settings, "settings")
 
-    owner = (raw_settings.get("owner") or os.environ.get("GITHUB_REPOSITORY_OWNER") or
-             MANAGER_REPO.split("/", 1)[0])
+    owner = raw_settings.get("owner") or os.environ.get("GITHUB_REPOSITORY_OWNER")
+    if not owner:
+        raise SyncError("settings.owner is not set and GITHUB_REPOSITORY_OWNER is empty")
     if not isinstance(owner, str) or not re.fullmatch(r"[A-Za-z0-9-]+", owner):
         raise SyncError(f"Invalid settings.owner: {owner!r}")
 

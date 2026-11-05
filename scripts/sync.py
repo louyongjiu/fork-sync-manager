@@ -77,6 +77,18 @@ class ResolvedRepo:
                 "set target_branch or enabled: false for this repo in FORK_SYNC_REPOS"
             )
 
+    @property
+    def target_ref(self) -> str:
+        return f"refs/remotes/origin/{self.target_branch}"
+
+    @property
+    def upstream_ref(self) -> str:
+        return f"refs/remotes/upstream/{self.upstream_branch}"
+
+    @property
+    def review_head(self) -> str:
+        return f"{self.fork.split('/', 1)[0]}:{self.target_branch}"
+
 
 @dataclass(frozen=True)
 class RepoResult:
@@ -86,8 +98,7 @@ class RepoResult:
 
 @dataclass(frozen=True)
 class MergeOutcome:
-    status: str
-    details: str
+    result: RepoResult
     head: str
 
 
@@ -252,11 +263,9 @@ def fetch_target_and_upstream(repo: ResolvedRepo, workdir: Path) -> str:
     git(["remote", "add", "origin", f"https://github.com/{repo.fork}.git"], workdir)
     git(["remote", "add", "upstream", f"https://github.com/{repo.upstream}.git"], workdir)
 
-    target_ref = f"refs/remotes/origin/{repo.target_branch}"
-    upstream_ref = f"refs/remotes/upstream/{repo.upstream_branch}"
-    git(["fetch", "--no-tags", "origin", f"+refs/heads/{repo.target_branch}:{target_ref}"], workdir)
-    git(["fetch", "--no-tags", "upstream", f"+refs/heads/{repo.upstream_branch}:{upstream_ref}"], workdir)
-    return git(["rev-parse", target_ref], workdir).stdout.strip()
+    git(["fetch", "--no-tags", "origin", f"+refs/heads/{repo.target_branch}:{repo.target_ref}"], workdir)
+    git(["fetch", "--no-tags", "upstream", f"+refs/heads/{repo.upstream_branch}:{repo.upstream_ref}"], workdir)
+    return git(["rev-parse", repo.target_ref], workdir).stdout.strip()
 
 
 def ensure_dev_branch(workdir: Path, dev: str, target_sha: str, dry_run: bool) -> tuple[str, str | None]:
@@ -283,16 +292,15 @@ def ensure_dev_branch(workdir: Path, dev: str, target_sha: str, dry_run: bool) -
 
 
 def merge_upstream(repo: ResolvedRepo, workdir: Path, target_sha: str, dry_run: bool) -> MergeOutcome:
-    target_ref = f"refs/remotes/origin/{repo.target_branch}"
-    upstream_ref = f"refs/remotes/upstream/{repo.upstream_branch}"
-    if is_ancestor(workdir, upstream_ref, target_ref):
+    if is_ancestor(workdir, repo.upstream_ref, repo.target_ref):
         return MergeOutcome(
-            "up_to_date", f"{repo.fork} already contains {repo.upstream}@{repo.upstream_branch}", target_sha
+            RepoResult("up_to_date", f"{repo.fork} already contains {repo.upstream}@{repo.upstream_branch}"),
+            target_sha,
         )
 
-    git(["checkout", "-B", repo.target_branch, target_ref], workdir)
+    git(["checkout", "-B", repo.target_branch, repo.target_ref], workdir)
     merge = git(
-        ["merge", "--ff", "--no-edit", upstream_ref],
+        ["merge", "--ff", "--no-edit", repo.upstream_ref],
         workdir,
         check=False,
     )
@@ -305,30 +313,37 @@ def merge_upstream(repo: ResolvedRepo, workdir: Path, target_sha: str, dry_run: 
         if conflicts:
             git(["merge", "--abort"], workdir, check=False)
             return MergeOutcome(
-                "conflict",
-                f"Conflicting files: {', '.join(conflicts[:30])}. "
-                f"Merge {repo.upstream}@{repo.upstream_branch} into {repo.target_branch} by hand; "
-                "the next run then reports up_to_date.",
+                RepoResult(
+                    "conflict",
+                    f"Conflicting files: {', '.join(conflicts[:30])}. "
+                    f"Merge {repo.upstream}@{repo.upstream_branch} into {repo.target_branch} by hand; "
+                    "the next run then reports up_to_date.",
+                ),
                 target_sha,
             )
         detail = (merge.stderr or merge.stdout).strip()
         raise SyncError(f"merge failed (possibly unrelated histories): {detail[-2000:]}")
 
     head = git(["rev-parse", "HEAD"], workdir).stdout.strip()
-    upstream_head = git(["rev-parse", upstream_ref], workdir).stdout.strip()
+    upstream_head = git(["rev-parse", repo.upstream_ref], workdir).stdout.strip()
     how = "fast-forward" if head == upstream_head else "merge commit"
     if dry_run:
-        return MergeOutcome("dry_run", f"Would push {how} {head[:12]} to {repo.target_branch}", head)
+        return MergeOutcome(
+            RepoResult("dry_run", f"Would push {how} {head[:12]} to {repo.target_branch}"),
+            head,
+        )
 
     git(["push", "origin", f"HEAD:refs/heads/{repo.target_branch}"], workdir)
-    return MergeOutcome("merged", f"pushed {how} {head[:12]} to {repo.target_branch}", head)
+    return MergeOutcome(
+        RepoResult("merged", f"pushed {how} {head[:12]} to {repo.target_branch}"),
+        head,
+    )
 
 
 def review_pulls(repo: ResolvedRepo) -> list[dict[str, Any]]:
-    owner = repo.fork.split("/", 1)[0]
     query = urllib.parse.urlencode({
         "state": "all",
-        "head": f"{owner}:{repo.target_branch}",
+        "head": repo.review_head,
         "base": repo.dev_branch,
         "per_page": 100,
     })
@@ -354,10 +369,9 @@ def review_body(repo: ResolvedRepo) -> str:
 
 
 def open_review_pull(repo: ResolvedRepo) -> dict[str, Any]:
-    owner = repo.fork.split("/", 1)[0]
     created = api_request("POST", f"/repos/{repo.fork}/pulls", {
         "title": f"Upstream sync: merge {repo.target_branch} into {repo.dev_branch}",
-        "head": f"{owner}:{repo.target_branch}",
+        "head": repo.review_head,
         "base": repo.dev_branch,
         "body": review_body(repo),
     })
@@ -395,15 +409,16 @@ def sync_repository(repo: ResolvedRepo, dry_run: bool) -> RepoResult:
             if creation_note:
                 notes.append(creation_note)
         outcome = merge_upstream(repo, workdir, target_sha, dry_run)
-        if dev_tip is not None and outcome.status in {"merged", "up_to_date", "dry_run"}:
+        result = outcome.result
+        if dev_tip is not None and result.status in {"merged", "up_to_date", "dry_run"}:
             try:
                 notes.append(review_note(repo, workdir, outcome.head, dev_tip, dry_run))
             except SyncError as exc:
-                if outcome.status == "merged":
-                    raise SyncError(f"{outcome.details}; review PR failed: {exc}") from exc
+                if result.status == "merged":
+                    raise SyncError(f"{result.details}; review PR failed: {exc}") from exc
                 raise
-        details = outcome.details if not notes else f"{outcome.details}; {'; '.join(notes)}"
-        return RepoResult(outcome.status, details)
+        details = result.details if not notes else f"{result.details}; {'; '.join(notes)}"
+        return RepoResult(result.status, details)
 
 
 def discover_forks(owner: str) -> list[str]:

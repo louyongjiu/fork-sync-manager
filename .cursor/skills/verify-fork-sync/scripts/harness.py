@@ -34,14 +34,9 @@ EVIDENCE_BASE = REPO_ROOT / ".verify" / "evidence"
 TOKEN = "verify-token-not-a-secret"
 OWNER = "alice"
 MANAGER_REPO = f"{OWNER}/fork-sync-manager"
-# Pin transcripts were recorded against these settings. The repository file is
-# the live manager config, so launch and config --reset write this instead.
-BASELINE_CONFIG = """\
-settings:
-  dry_run: true
-  discover_forks: true
-  max_repos: 100
-"""
+# config/repos.yml is the live manager config, so scenarios start from the file
+# a new user copies instead.
+EXAMPLE_CONFIG = REPO_ROOT / "config" / "repos.example.yml"
 
 SEED_REPOS: list[dict[str, Any]] = [
     {"full_name": "octo/widget", "default_branch": "main",
@@ -202,8 +197,9 @@ def write_text(path: Path, text: str) -> None:
         handle.write(text)
 
 
-def write_baseline_config(path: Path) -> None:
-    write_text(path, BASELINE_CONFIG)
+def write_example_config(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(EXAMPLE_CONFIG, path)
 
 
 def work_dir(run: dict[str, Any], label: str) -> Path:
@@ -274,7 +270,7 @@ def cmd_launch(args: argparse.Namespace) -> int:
     seed_repositories(run, env)
     seed = [{k: v for k, v in r.items() if k != "files"} for r in SEED_REPOS]
     (scratch / "seed.json").write_text(json.dumps({"repos": seed}, indent=2), encoding="utf-8")
-    write_baseline_config(scratch / "root" / "config" / "repos.yml")
+    write_example_config(scratch / "root" / "config" / "repos.yml")
 
     log = (scratch / "server.log").open("ab")
     flags = (subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS) if os.name == "nt" else 0
@@ -303,7 +299,7 @@ def cmd_launch(args: argparse.Namespace) -> int:
     print(f"scratch:   {scratch}")
     print(f"evidence:  {evidence}")
     print("repos:     " + ", ".join(r["full_name"] for r in SEED_REPOS))
-    print("config:    harness baseline (dry_run: true); change it with `config`")
+    print("config:    copy of config/repos.example.yml; change it with `config`")
     print("READY")
     return 0
 
@@ -353,7 +349,7 @@ def cmd_config(args: argparse.Namespace) -> int:
     run = load_run(args.run)
     path = Path(run["scratch"]) / "root" / "config" / "repos.yml"
     if args.reset:
-        write_baseline_config(path)
+        write_example_config(path)
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     settings = data.setdefault("settings", {}) or {}
     data["settings"] = settings
@@ -661,7 +657,7 @@ def main() -> int:
 
     p = sub.add_parser("config", help="edit the run's config/repos.yml")
     p.add_argument("--run", required=True)
-    p.add_argument("--reset", action="store_true", help="start again from the harness baseline config")
+    p.add_argument("--reset", action="store_true", help="start again from a copy of config/repos.example.yml")
     p.add_argument("--dry-run", choices=["true", "false"])
     p.add_argument("--discover", choices=["true", "false"])
     p.add_argument("--owner")

@@ -30,7 +30,7 @@
 Preconditions:
 
 - 刚 launch 好的运行，`doctor` 健康。
-- 临时 `config/repos.yml` 是 harness 的基线：`dry_run: true`、`discover_forks: true`、`max_repos: 100`。
+- 临时 `config/repos.yml` 是 `config/repos.example.yml` 的副本：`dry_run: true`、`discover_forks: true`、`max_repos: 100`。
 - 下面的命令按顺序执行。`config` 改 `settings`。`variable --repos` 改按仓库的条目。空字符串清除 `FORK_SYNC_REPOS`。`config --reset` 写回基线，不清除这个变量。
 
 - **发现（`discover-forks`、`archived-skip`）。** 命令：`& $py $h run --run $run --label discover`。预期状态行依次是 `alice/gadget: UP_TO_DATE`、`alice/legacy: SKIPPED: Fork repository is archived`、`alice/widget: UP_TO_DATE`，没有 `alice/notes`。`stdout.txt` 里有 `Discovered 3 repositories under alice`。

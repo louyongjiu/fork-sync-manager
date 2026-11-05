@@ -68,7 +68,7 @@ $run = "<同一个 id>"
 | `alice/legacy` | `octo/legacy` 的 Fork，已归档 |
 | `alice/notes` | `alice` 自己的普通仓库，不是 Fork |
 
-管理账号固定为 `alice`：`GITHUB_REPOSITORY=alice/fork-sync-manager`，`GITHUB_REPOSITORY_OWNER=alice`。临时根目录里的 `config/repos.yml` 由 harness 写成固定基线，`dry_run: true`、`discover_forks: true`、`max_repos: 100`。这次运行不读取仓库里的 `config/repos.yml`。
+管理账号固定为 `alice`：`GITHUB_REPOSITORY=alice/fork-sync-manager`，`GITHUB_REPOSITORY_OWNER=alice`。临时根目录里的 `config/repos.yml` 是仓库 `config/repos.example.yml` 的副本，也就是新用户复制的那份配置（`dry_run: true`、`discover_forks: true`、`max_repos: 100`）。仓库里的 `config/repos.yml` 是正式配置，这次运行不读取它。
 
 ## Doctor
 
@@ -93,7 +93,7 @@ $run = "<同一个 id>"
 
 | 用户或外部动作 | 命令 |
 |---|---|
-| 修改本次运行的 `config/repos.yml` | `config --dry-run true\|false`、`--owner <名>`、`--max-repos <n>`、`--discover true\|false`、`--settings-json '<JSON 对象>'`（原样合并进 `settings:`，用来写字符串布尔值或未知键）、`--repos-json '<JSON 列表>'`（把 `repos:` 写进临时文件，用来看到这个键被拒绝）、`--reset`（写回 harness 基线，可以和其他参数一起用。不清除 `FORK_SYNC_REPOS`） |
+| 修改本次运行的 `config/repos.yml` | `config --dry-run true\|false`、`--owner <名>`、`--max-repos <n>`、`--discover true\|false`、`--settings-json '<JSON 对象>'`（原样合并进 `settings:`，用来写字符串布尔值或未知键）、`--repos-json '<JSON 列表>'`（把 `repos:` 写进临时文件，用来看到这个键被拒绝）、`--reset`（重新复制 `config/repos.example.yml`，可以和其他参数一起用。不清除 `FORK_SYNC_REPOS`） |
 | 设置开发分支和按仓库条目 | `variable --dev-branch <名字>`、`variable --repos '<YAML 或 JSON 列表>'`。空字符串清除对应的那一个。两个值都留在本次运行的状态里，之后每次 `run` 都作为 `FORK_SYNC_DEV_BRANCH` 和 `FORK_SYNC_REPOS` 传给 `scripts/sync.py`，并写进该步的 `command.txt` |
 | 上游维护者或用户推送提交 | `commit --repo <owner/repo> [--branch <分支>] [--from <已有分支>] --file <路径> --text <整行内容>`（文件整体替换为这一行） |
 | 列出 Pull Request | `pr list` |
@@ -203,4 +203,4 @@ commit 的 sha 每次运行都不同，所以每个场景里按首次出现的�
 - `ubuntu-latest` 运行器、`actions/setup-python@v5` 和 Python 3.12（本机是 Windows，Python 版本以 `.venv` 为准）
 - workflow 的定时触发和 `concurrency` 分组
 
-在真实环境验证的入口：在管理仓库里把 `config/repos.yml` 保持为 `dry_run: true`，在 `Actions → Daily Upstream Sync → Run workflow` 手动触发，或者执行 `gh workflow run "Daily Upstream Sync"`，然后在运行页面看摘要。origin 是一个空的 GitHub 仓库，本机提交还没有推上去，所以这条路径还没有在 GitHub 上跑过。
+在真实环境验证的入口：在管理仓库里把 `config/repos.yml` 保持为 `dry_run: true`，在 `Actions → Daily Upstream Sync → Run workflow` 手动触发，或者执行 `gh workflow run "Daily Upstream Sync"`，然后在运行页面看摘要。最近的运行记录可以用 `gh run list -R <owner>/fork-sync-manager` 查看，失败的日志用 `gh run view <run id> --log-failed`。

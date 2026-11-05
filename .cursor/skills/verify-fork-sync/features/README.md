@@ -7,7 +7,7 @@
 - 已按 [../SKILL.md](../SKILL.md) 执行 `launch`，`doctor` 输出 `doctor: healthy`。
 - 当前 PowerShell 会话里已定义 `$py`、`$h`、`$run`。
 - 种子数据：`alice/widget`、`alice/gadget` 与各自上游同步，`alice/legacy` 已归档，`alice/notes` 不是 Fork。
-- 临时配置是 harness 的基线（`dry_run: true`、`discover_forks: true`、`max_repos: 100`）。功能文件需要正式同步时，会先执行 `config --dry-run false`。
+- 临时配置是 `config/repos.example.yml` 的副本（`dry_run: true`、`discover_forks: true`、`max_repos: 100`）。功能文件需要正式同步时，会先执行 `config --dry-run false`。
 - 只驱动本次 launch 出来的 run id。
 
 ## 驱动约定

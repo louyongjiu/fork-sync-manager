@@ -11,7 +11,7 @@
 
 ## How to get to it (user POV)
 
-- 首次部署时保持 `config/repos.yml` 里的 `dry_run: true`，然后在 `Actions → Daily Upstream Sync → Run workflow` 手动执行。
+- 首次部署时用 `config/repos.example.yml` 替换 `config/repos.yml`（其中是 `dry_run: true`），然后在 `Actions → Daily Upstream Sync → Run workflow` 手动执行。
 - 每天 03:17 UTC 的定时运行在 `dry_run: true` 时行为相同。
 
 ## Driving it with harness.py
@@ -19,7 +19,7 @@
 Preconditions:
 
 - 刚 launch 好的运行，`doctor` 健康。
-- 配置是 harness 基线（`dry_run: true`）。如果改过，先执行 `& $py $h config --run $run --reset`。
+- 配置是 `config/repos.example.yml` 的副本（`dry_run: true`）。如果改过，先执行 `& $py $h config --run $run --reset`。
 
 - **基线。** 什么都不改，直接运行。命令：`& $py $h run --run $run --label dry-baseline`。预期 `sync.py exit code: 0`；`alice/widget` 和 `alice/gadget` 是 `UP_TO_DATE`；`alice/legacy` 是 `SKIPPED: Fork repository is archived`。
 - **上游新提交。** 上游维护者给 `octo/widget` 推送一个提交。命令：`& $py $h commit --run $run --repo octo/widget --file feature.txt --text "upstream feature 1"`。命令会打印新提交的 sha。

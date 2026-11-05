@@ -543,7 +543,7 @@ def select_repos(settings: Settings, specs: tuple[RepoSpec, ...]) -> tuple[RepoS
             selected[fork.lower()] = RepoSpec(fork=fork)
     for spec in specs:
         selected[spec.fork.lower()] = spec
-    repos = tuple(spec for slug, spec in selected.items())
+    repos = tuple(selected.values())
 
     if len(repos) > settings.max_repos:
         raise SelectionError(

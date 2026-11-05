@@ -15,6 +15,7 @@ Keep every fork in your GitHub account up to date from one repository. A schedul
 - [Resolve a merge conflict](#resolve-a-merge-conflict)
 - [Safety notes](#safety-notes)
 - [Local verification](#local-verification)
+- [License](#license)
 
 ## Features
 
@@ -89,7 +90,7 @@ flowchart TD
    - **Repository permissions:** see the table below.
 4. In the manager repository, open **Settings → Secrets and variables → Actions** and add the secret `FORK_SYNC_TOKEN` with the token as its value. Do not put the token in any file.
 5. Optionally add the variables `FORK_SYNC_DEV_BRANCH` and `FORK_SYNC_REPOS` on the **Variables** tab. See [Secrets and variables](#secrets-and-variables). Use Variables rather than Secrets for these two. Actions prints secret values as `***` in logs, which would hide the branch and repository names in every status line.
-6. Set `dry_run: true` in `config/repos.yml`, commit, and start the workflow by hand. Check the selected forks, upstreams, and branches in the run summary. A dry run still merges in a temporary directory, so a fork with conflicts shows up as `conflict` and the run fails.
+6. Replace `config/repos.yml` with `config/repos.example.yml`, which starts with `dry_run: true`. Commit, and start the workflow by hand. Check the selected forks, upstreams, and branches in the run summary. A dry run still merges in a temporary directory, so a fork with conflicts shows up as `conflict` and the run fails.
 7. Set `dry_run: false`, commit, and start the workflow once more. From then on it runs every day.
 
 | Token permission | Access | Why the script needs it |
@@ -104,6 +105,8 @@ If an upstream is private and belongs to another account, the token also needs r
 ## Configuration
 
 Settings that apply to every run live in `config/repos.yml`. The token and the per-fork entries live in GitHub Actions secrets and variables.
+
+The `config/repos.yml` in this repository is the live configuration of the author's own manager, so it has `dry_run: false`. Start from `config/repos.example.yml` instead.
 
 ### config/repos.yml
 
@@ -274,3 +277,7 @@ python -m venv .venv
 ```
 
 See `.cursor/skills/verify-fork-sync/SKILL.md` for driving single scenarios by hand and for what the stand-in does not cover.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

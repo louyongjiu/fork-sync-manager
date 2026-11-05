@@ -15,6 +15,7 @@
 - [处理合并冲突](#处理合并冲突)
 - [安全说明](#安全说明)
 - [本地验证](#本地验证)
+- [许可证](#许可证)
 
 ## 功能
 
@@ -89,7 +90,7 @@ flowchart TD
    - **Repository permissions**：见下表。
 4. 在管理仓库打开 **Settings → Secrets and variables → Actions**，新建 Secret `FORK_SYNC_TOKEN`，值填这个 Token。不要把 Token 写进任何文件。
 5. 按需在 **Variables** 页新建变量 `FORK_SYNC_DEV_BRANCH` 和 `FORK_SYNC_REPOS`，见[Secret 和变量](#secret-和变量)。这两个用 Variables，不要用 Secrets。Actions 会把 Secret 的值在日志里显示成 `***`，每条状态里的分支名和仓库名都会被遮住。
-6. 在 `config/repos.yml` 里设置 `dry_run: true`，提交后手动运行一次。在运行摘要里检查选中的 Fork、上游和分支。试运行也会在临时目录里真实合并一次，有冲突的 Fork 会记为 `conflict`，这次运行会失败。
+6. 用 `config/repos.example.yml` 替换 `config/repos.yml`，示例配置默认 `dry_run: true`。提交后手动运行一次。在运行摘要里检查选中的 Fork、上游和分支。试运行也会在临时目录里真实合并一次，有冲突的 Fork 会记为 `conflict`，这次运行会失败。
 7. 改成 `dry_run: false`，提交后再手动运行一次。之后每天自动运行。
 
 | Token 权限 | 级别 | 用途 |
@@ -104,6 +105,8 @@ flowchart TD
 ## 配置
 
 每次运行都适用的设置写在 `config/repos.yml`。Token 和单个 Fork 的覆盖项写在 GitHub Actions 的 Secret 和变量里。
+
+本仓库里的 `config/repos.yml` 是作者自己的管理仓库正在用的配置，所以是 `dry_run: false`。请从 `config/repos.example.yml` 开始。
 
 ### config/repos.yml
 
@@ -274,3 +277,7 @@ python -m venv .venv
 ```
 
 手动驱动单个场景的方法，以及替身没有覆盖的部分，见 `.cursor/skills/verify-fork-sync/SKILL.md`。
+
+## 许可证
+
+MIT，见 [LICENSE](LICENSE)。

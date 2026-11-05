@@ -41,7 +41,6 @@ settings:
   dry_run: true
   discover_forks: true
   max_repos: 100
-  exclude: []
 """
 
 SEED_REPOS: list[dict[str, Any]] = [

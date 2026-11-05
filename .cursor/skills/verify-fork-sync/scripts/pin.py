@@ -87,10 +87,11 @@ SCENARIOS: dict[str, list[tuple]] = {
         commit("alice/widget", "shared.txt", "upstream v2"),
         run("resolved"),
     ],
-    "exclude-disable": [
-        ("config", ["--exclude", "widget"]),
-        repos_variable('[{"fork": "alice/gadget", "enabled": false}]'),
-        run("exclude-disable"),
+    "disable-entries": [
+        repos_variable(
+            '[{"fork": "alice/gadget", "enabled": false}, {"fork": "alice/widget", "enabled": false}]'
+        ),
+        run("disable-entries"),
     ],
     "override-branch": [
         commit("octo/gadget", "r.txt", "release only", "--branch", "release", "--from", "develop"),
@@ -123,12 +124,16 @@ SCENARIOS: dict[str, list[tuple]] = {
     "max-repos": [
         ("config", ["--max-repos", "2"]),
         run("max-repos-2"),
-        ("config", ["--max-repos", "2", "--exclude", "widget"]),
-        run("max-repos-2-excluding-one"),
+        ("config", ["--max-repos", "2"]),
+        repos_variable('[{"fork": "alice/gadget", "enabled": false}]'),
+        run("max-repos-2-disabled"),
+        ("config", ["--max-repos", "3"]),
+        run("max-repos-3"),
     ],
     "dev-lifecycle": [
-        ("config", ["--dry-run", "false", "--exclude", "gadget"]),
+        ("config", ["--dry-run", "false"]),
         variable("develop"),
+        repos_variable('[{"fork": "alice/gadget", "enabled": false}]'),
         commit("octo/widget", "feature.txt", "upstream 1"),
         run("merge-1"),
         run("pr-open"),
@@ -140,8 +145,9 @@ SCENARIOS: dict[str, list[tuple]] = {
         run("pr-2"),
     ],
     "dev-closed": [
-        ("config", ["--dry-run", "false", "--exclude", "gadget"]),
+        ("config", ["--dry-run", "false"]),
         variable("develop"),
+        repos_variable('[{"fork": "alice/gadget", "enabled": false}]'),
         commit("octo/widget", "feature.txt", "upstream 1"),
         run("open"),
         ("pr", ["close", "--repo", "alice/widget", "--number", "1"]),
@@ -150,16 +156,18 @@ SCENARIOS: dict[str, list[tuple]] = {
         run("moved"),
     ],
     "dev-squash": [
-        ("config", ["--dry-run", "false", "--exclude", "gadget"]),
+        ("config", ["--dry-run", "false"]),
         variable("develop"),
+        repos_variable('[{"fork": "alice/gadget", "enabled": false}]'),
         commit("octo/widget", "feature.txt", "upstream 1"),
         run("open"),
         ("pr", ["merge", "--repo", "alice/widget", "--number", "1", "--method", "squash"]),
         run("after-squash"),
     ],
     "dev-existing": [
-        ("config", ["--dry-run", "false", "--exclude", "gadget"]),
+        ("config", ["--dry-run", "false"]),
         variable("develop"),
+        repos_variable('[{"fork": "alice/gadget", "enabled": false}]'),
         commit("alice/widget", "local.txt", "on develop", "--branch", "develop", "--from", "main"),
         commit("octo/widget", "feature.txt", "upstream 1"),
         run("existing"),
@@ -172,8 +180,9 @@ SCENARIOS: dict[str, list[tuple]] = {
         run("same-name"),
     ],
     "dev-dry-run": [
-        ("config", ["--dry-run", "true", "--exclude", "gadget"]),
+        ("config", ["--dry-run", "true"]),
         variable("develop"),
+        repos_variable('[{"fork": "alice/gadget", "enabled": false}]'),
         commit("octo/widget", "feature.txt", "upstream 1"),
         run("dry"),
     ],

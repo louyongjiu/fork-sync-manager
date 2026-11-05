@@ -33,7 +33,7 @@ workflow `.github/workflows/daily-sync.yml` 每天 03:17 UTC 执行一次 `pytho
 ### 一次运行
 
 1. 检查 `FORK_SYNC_TOKEN`、`FORK_SYNC_DEV_BRANCH`、`FORK_SYNC_REPOS` 和 `config/repos.yml`。有任何问题时以退出码 `2` 结束，不调用 GitHub API。
-2. 选出要处理的仓库：自动发现的 Fork 加上 `FORK_SYNC_REPOS` 里的项，去掉 `exclude`。剩下的数量超过 `max_repos` 或者为零时，以退出码 `2` 结束。列出 Fork 时出错，以退出码 `1` 结束。
+2. 选出要处理的仓库：自动发现的 Fork 加上 `FORK_SYNC_REPOS` 里的项。写了 `enabled: false` 的项仍留在选出的结果里。选出的数量超过 `max_repos` 或者为零时，以退出码 `2` 结束。列出 Fork 时出错，以退出码 `1` 结束。
 3. 逐个处理仓库。一个仓库出错只把它记为 `failed`，其他仓库照常处理。
 4. 写出摘要，列出每个仓库的状态和详情。有仓库记为 `failed` 或 `conflict` 时退出码为 `1`，否则为 `0`。
 
@@ -83,7 +83,7 @@ flowchart TD
 ## 快速开始
 
 1. 新建一个管理仓库，例如 `fork-sync-manager`，把这些文件放在它默认分支的根目录。GitHub 只运行默认分支里的定时 workflow。
-2. 复制文件，不要 Fork 本仓库。如果 Token 能看到你 Fork 出来的这个仓库，脚本会把它当作普通 Fork，把本仓库合并进去。确实要 Fork 的话，不要把这个 Fork 加进 Token 的仓库访问范围，或者把它写进 `exclude`。
+2. 复制文件，不要 Fork 本仓库。如果 Token 能看到你 Fork 出来的这个仓库，脚本会把它当作普通 Fork，把本仓库合并进去。确实要 Fork 的话，不要把这个 Fork 加进 Token 的仓库访问范围，或者在 `FORK_SYNC_REPOS` 里给它写 `enabled: false`。
 3. 创建 [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new)：
    - **Resource owner**：你的账号。
    - **Repository access**：要同步的 Fork。先选一两个试一试。
@@ -117,18 +117,16 @@ settings:
   dry_run: true
   discover_forks: true
   max_repos: 100
-  exclude: []
 ```
 
 | 键 | 默认值 | 说明 |
 |---|---|---|
 | `dry_run` | `false` | `true` 时只在临时目录里合并，不推送、不建分支、不调用 Pull Request 接口。必须写 `true` 或 `false`，不能写成字符串。 |
 | `discover_forks` | `true` | 用 `GET /user/repos?affiliation=owner` 列出 Token 能看到的仓库，留下属于 `owner` 的 Fork。 |
-| `max_repos` | `100` | 去掉 `exclude` 之后最多处理的仓库数，1 到 1000 的整数。Token 能看到的仓库比预期多时，运行会停下来。 |
-| `exclude` | `[]` | 要跳过的仓库，可以只写仓库名（`widget`），也可以写 `owner/repo`。 |
+| `max_repos` | `100` | 选出的仓库数上限，包括写了 `enabled: false` 的项。1 到 1000 的整数。Token 能看到的仓库比预期多时，运行会停下来。 |
 | `owner` | 管理仓库的所有者 | 要同步哪个账号的 Fork。 |
 
-只想同步部分 Fork 时，把其他的写进 `exclude`，或者只给 Token 授权这些 Fork。
+只想同步部分 Fork 时，在 `FORK_SYNC_REPOS` 里给其他 Fork 写 `enabled: false`，或者只给 Token 授权这些 Fork。
 
 ### Secret 和变量
 
@@ -170,13 +168,13 @@ settings:
 下面这些问题会让运行以退出码 `2` 结束，一个仓库都不处理：
 
 - 缺少 `FORK_SYNC_TOKEN`
-- 未知的键，例如 `dryrun`、`upstream_brnach`
+- 未知的键，例如 `dryrun`、`upstream_brnach`、`exclude`
 - 应该写 `true` 或 `false` 的地方写成了字符串，例如 `"false"`
 - 不合法的分支名，包括 `FORK_SYNC_DEV_BRANCH`
 - 不属于 `owner` 的 `fork`
 - `FORK_SYNC_REPOS` 不是合法的 YAML，或者不是列表
 - `config/repos.yml` 里有 `settings` 以外的顶层键
-- 去掉 `exclude` 之后超过 `max_repos`，或者一个仓库都没有
+- 选出的仓库数超过 `max_repos`，或者一个仓库都没有
 
 ## 审查 Pull Request
 
@@ -193,7 +191,7 @@ settings:
 
 要求先审查再合并时，给开发分支加上保护规则。GitHub 不允许 Pull Request 的作者批准自己的 Pull Request，而这些 Pull Request 的作者是 Token 的所有者。所以要求批准时，需要另一位开发者，或者由管理员绕过。
 
-某个 Fork 的目标分支和 `FORK_SYNC_DEV_BRANCH` 同名时，该仓库记为 `failed`，详情是 `FORK_SYNC_DEV_BRANCH '<名字>' is the target branch of <fork>; set target_branch for this repo or exclude it`。在 `FORK_SYNC_REPOS` 里给它写 `target_branch`，或者把它写进 `exclude`。
+某个 Fork 的目标分支和 `FORK_SYNC_DEV_BRANCH` 同名时，该仓库记为 `failed`，详情是 `FORK_SYNC_DEV_BRANCH '<名字>' is the target branch of <fork>; set target_branch or enabled: false for this repo in FORK_SYNC_REPOS`。在 `FORK_SYNC_REPOS` 里给它写 `target_branch`，或者写 `enabled: false`。
 
 目标分支和开发分支之间的冲突出现在 Pull Request 上，不记为 `conflict`。可以用 GitHub 的冲突编辑器解决，也可以在本地把目标分支合并进开发分支再推送。
 
@@ -206,7 +204,7 @@ settings:
 | `merged` | 合并结果已推到目标分支。详情里的 `fast-forward` 表示快进，`merge commit` 表示 Fork 有自己的提交。 |
 | `up_to_date` | 目标分支已经包含上游分支。 |
 | `conflict` | 合并有冲突。详情列出冲突文件，并写明要手工合并哪两个分支。目标分支不变。会让 workflow 失败。 |
-| `skipped` | 仓库已归档，或者写了 `enabled: false`。 |
+| `skipped` | 仓库已归档，或者在 `FORK_SYNC_REPOS` 里写了 `enabled: false`。详情是 `Fork repository is archived` 或 `disabled in FORK_SYNC_REPOS`。 |
 | `failed` | 权限不足、网络或 API 错误、仓库或上游不存在、两边历史不相关、开发分支和目标分支同名、审查 Pull Request 出错，或者推送被拒。会让 workflow 失败。 |
 | `dry_run` | 在临时目录里完成合并，没有推送。详情写明会推送什么。试运行遇到冲突时仍记为 `conflict`。 |
 

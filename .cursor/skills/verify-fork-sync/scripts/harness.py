@@ -365,8 +365,6 @@ def cmd_config(args: argparse.Namespace) -> int:
         settings["owner"] = args.owner
     if args.max_repos is not None:
         settings["max_repos"] = args.max_repos
-    if args.exclude is not None:
-        settings["exclude"] = [x for x in args.exclude if x]
     if args.settings_json is not None:
         settings.update(json.loads(args.settings_json))
     if args.repos_json is not None:
@@ -668,7 +666,6 @@ def main() -> int:
     p.add_argument("--discover", choices=["true", "false"])
     p.add_argument("--owner")
     p.add_argument("--max-repos", type=int)
-    p.add_argument("--exclude", nargs="*")
     p.add_argument("--settings-json", help="JSON object merged into `settings:` as written, e.g. '{\"dry_run\": \"false\"}'")
     p.add_argument("--repos-json", help="JSON list written as the top-level `repos:` key")
     p.set_defaults(func=cmd_config)

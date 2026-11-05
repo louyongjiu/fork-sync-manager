@@ -114,6 +114,9 @@ SCENARIOS: dict[str, list[tuple]] = {
         ("config", ["--settings-json", '{"dryrun": true}']),
         repos_variable('[{"fork": "alice/gadget", "upstream_brnach": "release"}]'),
         run("unknown-keys"),
+        repos_variable(""),
+        ("config", ["--reset", "--settings-json", '{"exclude": []}']),
+        run("exclude-key"),
     ],
     "string-bools": [
         ("config", ["--settings-json", '{"dry_run": "false"}']),

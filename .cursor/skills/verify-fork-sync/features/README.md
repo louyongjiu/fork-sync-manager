@@ -7,7 +7,7 @@
 - 已按 [../SKILL.md](../SKILL.md) 执行 `launch`，`doctor` 输出 `doctor: healthy`。
 - 当前 PowerShell 会话里已定义 `$py`、`$h`、`$run`。
 - 种子数据：`alice/widget`、`alice/gadget` 与各自上游同步，`alice/legacy` 已归档，`alice/notes` 不是 Fork。
-- 临时配置是 harness 的基线（`dry_run: true`、`discover_forks: true`、`max_repos: 100`、`exclude: []`）。功能文件需要正式同步时，会先执行 `config --dry-run false`。
+- 临时配置是 harness 的基线（`dry_run: true`、`discover_forks: true`、`max_repos: 100`）。功能文件需要正式同步时，会先执行 `config --dry-run false`。
 - 只驱动本次 launch 出来的 run id。
 
 ## 驱动约定
@@ -42,4 +42,4 @@
 - [合并到目标分支](./merge.md)：快进或生成合并提交，推送到目标分支。再运行一次变为 `up_to_date`。
 - [审查 Pull Request](./review-pr.md)：设置了 `FORK_SYNC_DEV_BRANCH` 时，目标分支的更新通过 Pull Request 进入开发分支。
 - [合并冲突](./conflict.md)：报告冲突文件，目标分支保持原提交，任务退出码 `1`。
-- [自动发现与配置](./discovery-config.md)：发现哪些 Fork、归档跳过、`exclude`、`FORK_SYNC_REPOS` 里的停用和覆盖、账号校验、缺少 token。
+- [自动发现与配置](./discovery-config.md)：发现哪些 Fork、归档跳过、`FORK_SYNC_REPOS` 里的停用和覆盖、账号校验、缺少 token。

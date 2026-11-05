@@ -2,6 +2,7 @@
 # Copy this file to config/repos.yml before the first run.
 # The token and the per-fork entries go in GitHub Actions secrets and
 # variables: FORK_SYNC_TOKEN, FORK_SYNC_DEV_BRANCH, FORK_SYNC_REPOS.
+# Pause a fork with enabled: false in FORK_SYNC_REPOS.
 settings:
   # The first run merges in a temporary directory and pushes nothing.
   # Change to false after checking the run summary.
@@ -10,14 +11,8 @@ settings:
   # Sync the forks the token can see that belong to owner.
   discover_forks: true
 
-  # Stop the run when more repositories than this remain after exclude (1 to 1000).
+  # Upper limit on selected repositories, including entries with enabled: false (1 to 1000).
   max_repos: 100
 
   # Account whose forks are synced. Defaults to the owner of the manager repository.
   # owner: YOUR_GITHUB_USERNAME
-
-  # Repositories to skip, as a name or as owner/repo.
-  exclude: []
-  # exclude:
-  #   - example-old-fork
-  #   - YOUR_GITHUB_USERNAME/another-fork

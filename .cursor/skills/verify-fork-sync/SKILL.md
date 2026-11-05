@@ -68,7 +68,7 @@ $run = "<同一个 id>"
 | `alice/legacy` | `octo/legacy` 的 Fork，已归档 |
 | `alice/notes` | `alice` 自己的普通仓库，不是 Fork |
 
-管理账号固定为 `alice`：`GITHUB_REPOSITORY=alice/fork-sync-manager`，`GITHUB_REPOSITORY_OWNER=alice`。临时根目录里的 `config/repos.yml` 由 harness 写成固定基线，`dry_run: true`、`discover_forks: true`、`max_repos: 100`、`exclude: []`。这次运行不读取仓库里的 `config/repos.yml`。
+管理账号固定为 `alice`：`GITHUB_REPOSITORY=alice/fork-sync-manager`，`GITHUB_REPOSITORY_OWNER=alice`。临时根目录里的 `config/repos.yml` 由 harness 写成固定基线，`dry_run: true`、`discover_forks: true`、`max_repos: 100`。这次运行不读取仓库里的 `config/repos.yml`。
 
 ## Doctor
 
@@ -93,7 +93,7 @@ $run = "<同一个 id>"
 
 | 用户或外部动作 | 命令 |
 |---|---|
-| 修改本次运行的 `config/repos.yml` | `config --dry-run true\|false`、`--exclude <名> ...`、`--owner <名>`、`--max-repos <n>`、`--discover true\|false`、`--settings-json '<JSON 对象>'`（原样合并进 `settings:`，用来写字符串布尔值或未知键）、`--repos-json '<JSON 列表>'`（把 `repos:` 写进临时文件，用来看到这个键被拒绝）、`--reset`（写回 harness 基线，可以和其他参数一起用。不清除 `FORK_SYNC_REPOS`） |
+| 修改本次运行的 `config/repos.yml` | `config --dry-run true\|false`、`--owner <名>`、`--max-repos <n>`、`--discover true\|false`、`--settings-json '<JSON 对象>'`（原样合并进 `settings:`，用来写字符串布尔值或未知键）、`--repos-json '<JSON 列表>'`（把 `repos:` 写进临时文件，用来看到这个键被拒绝）、`--reset`（写回 harness 基线，可以和其他参数一起用。不清除 `FORK_SYNC_REPOS`） |
 | 设置开发分支和按仓库条目 | `variable --dev-branch <名字>`、`variable --repos '<YAML 或 JSON 列表>'`。空字符串清除对应的那一个。两个值都留在本次运行的状态里，之后每次 `run` 都作为 `FORK_SYNC_DEV_BRANCH` 和 `FORK_SYNC_REPOS` 传给 `scripts/sync.py`，并写进该步的 `command.txt` |
 | 上游维护者或用户推送提交 | `commit --repo <owner/repo> [--branch <分支>] [--from <已有分支>] --file <路径> --text <整行内容>`（文件整体替换为这一行） |
 | 列出 Pull Request | `pr list` |
@@ -121,15 +121,15 @@ harness 本身的退出码等于 `sync.py` 的退出码；harness 自己出错�
 - 纯镜像 Fork 快进，目标和上游指向同一个提交；
 - 冲突持续两次；
 - 冲突之后把文件改成和上游相同的文本，再运行得到 `merged`；
-- 排除和停用；
+- 用 `enabled: false` 停用 Fork，停用项仍计入 `max_repos`；
 - 单仓库覆盖上游分支；
 - 账号校验；
 - 缺少 token；
 - 错误的 token；
 - 停用但访问不到的仓库；
-- 未知键；
+- 未知键，包括 `settings` 里的 `exclude`；
 - 字符串布尔值；
-- `max_repos`；
+- `max_repos`，停用项也计入；
 - 开发分支从合并前的目标提交创建，并打开审查 Pull Request。已经打开的 Pull Request 保持打开，脚本不另建一个，head 跟着目标分支走；
 - 关闭或 Squash 合并之后，目标分支还停在当时的提交上时，脚本不开新的 Pull Request。目标分支前进后才开下一个；
 - 开发分支已经有自己的提交时，这次运行不创建分支，也不改那个提交，审查 Pull Request 的 base 是这个分支；

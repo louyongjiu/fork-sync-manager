@@ -7,9 +7,3 @@ settings:
 
   # 如需只使用特定账号，取消下一行注释，并填写账号名。
   # owner: YOUR_GITHUB_USERNAME
-
-  # 需要排除的仓库（可只写仓库名，也可填写 owner/repo）。
-  exclude: []
-  # exclude:
-  #   - example-disabled-fork
-  #   - YOUR_GITHUB_USERNAME/example-old-fork

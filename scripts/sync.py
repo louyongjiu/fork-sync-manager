@@ -51,7 +51,6 @@ class Settings:
     dry_run: bool
     discover_forks: bool
     max_repos: int
-    exclude: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -75,7 +74,7 @@ class ResolvedRepo:
         if self.dev_branch is not None and self.dev_branch == self.target_branch:
             raise SyncError(
                 f"FORK_SYNC_DEV_BRANCH {self.dev_branch!r} is the target branch of {self.fork}; "
-                "set target_branch for this repo or exclude it"
+                "set target_branch or enabled: false for this repo in FORK_SYNC_REPOS"
             )
 
 
@@ -215,7 +214,7 @@ def append_summary(rows: list[dict[str, str]], counts: dict[str, int]) -> None:
 
 def sync_one(repo: RepoSpec, settings: Settings, dev_branch: str | None) -> RepoResult:
     if not repo.enabled:
-        return RepoResult("skipped", "disabled in config")
+        return RepoResult("skipped", "disabled in FORK_SYNC_REPOS")
     fork_meta = repo_metadata(repo.fork)
     if fork_meta.get("archived"):
         return RepoResult("skipped", "Fork repository is archived")
@@ -525,10 +524,6 @@ def parse_config(path: Path) -> tuple[Settings, tuple[RepoSpec, ...], str | None
     if not isinstance(max_repos, int) or isinstance(max_repos, bool) or not (1 <= max_repos <= 1000):
         raise SyncError("settings.max_repos must be an integer from 1 to 1000")
 
-    excluded = raw_settings.get("exclude") or []
-    if not isinstance(excluded, list) or any(not isinstance(x, str) for x in excluded):
-        raise SyncError("settings.exclude must be a list of repository names")
-
     dry_run = read_bool(raw_settings, "dry_run", False, "settings.dry_run")
     discover = read_bool(raw_settings, "discover_forks", True, "settings.discover_forks")
 
@@ -537,7 +532,6 @@ def parse_config(path: Path) -> tuple[Settings, tuple[RepoSpec, ...], str | None
         dry_run=dry_run,
         discover_forks=discover,
         max_repos=max_repos,
-        exclude=frozenset(x.lower() if "/" in x else f"{owner}/{x}".lower() for x in excluded),
     )
     return settings, read_repo_specs(settings.owner), read_dev_branch()
 
@@ -549,7 +543,7 @@ def select_repos(settings: Settings, specs: tuple[RepoSpec, ...]) -> tuple[RepoS
             selected[fork.lower()] = RepoSpec(fork=fork)
     for spec in specs:
         selected[spec.fork.lower()] = spec
-    repos = tuple(spec for slug, spec in selected.items() if slug not in settings.exclude)
+    repos = tuple(spec for slug, spec in selected.items())
 
     if len(repos) > settings.max_repos:
         raise SelectionError(

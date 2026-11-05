@@ -33,7 +33,7 @@ The workflow `.github/workflows/daily-sync.yml` runs `python scripts/sync.py` ev
 ### One run
 
 1. The script checks `FORK_SYNC_TOKEN`, `FORK_SYNC_DEV_BRANCH`, `FORK_SYNC_REPOS`, and `config/repos.yml`. Any problem ends the run with exit code `2` before the first GitHub API call.
-2. It selects the repositories: the discovered forks plus the entries in `FORK_SYNC_REPOS`, minus `exclude`. If more than `max_repos` remain, or none, the run ends with exit code `2`. If listing the forks fails, the run ends with exit code `1`.
+2. It selects the repositories: the discovered forks plus the entries in `FORK_SYNC_REPOS`. Entries with `enabled: false` stay selected. If more than `max_repos` are selected, or none, the run ends with exit code `2`. If listing the forks fails, the run ends with exit code `1`.
 3. It processes the repositories one at a time. An error in one repository marks that repository `failed`, and the others continue.
 4. It writes a summary with every repository's status and details. The exit code is `1` when any repository is `failed` or `conflict`, and `0` otherwise.
 
@@ -83,7 +83,7 @@ flowchart TD
 ## Quick start
 
 1. Create a repository for the manager, for example `fork-sync-manager`, and put these files at the root of its default branch. GitHub runs scheduled workflows only from the default branch.
-2. Copy the files rather than forking this repository. A fork of this repository is discovered like any other fork when your token can see it, and the script then merges this repository into it. If you do fork it, leave that fork out of the token's repository access or add it to `exclude`.
+2. Copy the files rather than forking this repository. A fork of this repository is discovered like any other fork when your token can see it, and the script then merges this repository into it. If you do fork it, leave that fork out of the token's repository access, or set `enabled: false` for it in `FORK_SYNC_REPOS`.
 3. Create a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new):
    - **Resource owner:** your account.
    - **Repository access:** the forks you want to sync. Start with one or two.
@@ -117,18 +117,16 @@ settings:
   dry_run: true
   discover_forks: true
   max_repos: 100
-  exclude: []
 ```
 
 | Key | Default | Description |
 |---|---|---|
 | `dry_run` | `false` | `true` merges in a temporary directory without pushing, creating branches, or calling the pull request API. Write `true` or `false`, not a string. |
 | `discover_forks` | `true` | Lists the repositories the token can see with `GET /user/repos?affiliation=owner` and keeps the forks that belong to `owner`. |
-| `max_repos` | `100` | Upper limit on the repositories left after `exclude`. An integer from 1 to 1000. It stops a run when the token sees more repositories than you expect. |
-| `exclude` | `[]` | Repositories to skip, as a name (`widget`) or as `owner/repo`. |
+| `max_repos` | `100` | Upper limit on selected repositories, including entries with `enabled: false`. An integer from 1 to 1000. It stops a run when the token sees more repositories than you expect. |
 | `owner` | owner of the manager repository | The account whose forks are synced. |
 
-To sync only some forks, list the others in `exclude`, or grant the token access to only those forks.
+To sync only some forks, set `enabled: false` for the others in `FORK_SYNC_REPOS`, or grant the token access to only those forks.
 
 ### Secrets and variables
 
@@ -170,13 +168,13 @@ You can also add a repository that is not a GitHub fork, such as a mirror. It mu
 These problems end the run with exit code `2` before any repository is processed:
 
 - a missing `FORK_SYNC_TOKEN`
-- an unknown key, such as `dryrun` or `upstream_brnach`
+- an unknown key, such as `dryrun`, `upstream_brnach`, or `exclude`
 - a string where `true` or `false` is expected, such as `"false"`
 - an invalid branch name, including `FORK_SYNC_DEV_BRANCH`
 - a `fork` that does not belong to `owner`
 - `FORK_SYNC_REPOS` that is not valid YAML or is not a list
 - a top-level key other than `settings` in `config/repos.yml`
-- more than `max_repos` repositories after `exclude`, or no repository at all
+- more selected repositories than `max_repos`, or no repository at all
 
 ## Review pull requests
 
@@ -193,7 +191,7 @@ Merge review pull requests with **Create a merge commit**. A squash merge makes 
 
 To require a review before merging, add a branch protection rule to the dev branch. GitHub does not let a pull request's author approve it, and these pull requests are authored by the token's owner. A required approval therefore needs another developer or an administrator bypass.
 
-If a fork's target branch has the same name as `FORK_SYNC_DEV_BRANCH`, that fork is `failed` with `FORK_SYNC_DEV_BRANCH '<name>' is the target branch of <fork>; set target_branch for this repo or exclude it`. Set `target_branch` for it in `FORK_SYNC_REPOS`, or add it to `exclude`.
+If a fork's target branch has the same name as `FORK_SYNC_DEV_BRANCH`, that fork is `failed` with `FORK_SYNC_DEV_BRANCH '<name>' is the target branch of <fork>; set target_branch or enabled: false for this repo in FORK_SYNC_REPOS`. Set `target_branch` for it in `FORK_SYNC_REPOS`, or set `enabled: false`.
 
 A conflict between the target branch and the dev branch appears in the pull request, not as a `conflict` status. Resolve it with GitHub's conflict editor, or merge the target branch into the dev branch locally and push.
 
@@ -206,7 +204,7 @@ Each run's summary is on its page under **Actions → Daily Upstream Sync**.
 | `merged` | The merge result was pushed to the target branch. `fast-forward` in the details means a fast-forward. `merge commit` means the fork has its own commits. |
 | `up_to_date` | The target branch already contains the upstream branch. |
 | `conflict` | The merge conflicted. The details list the files and say which branches to merge by hand. The target branch is unchanged. Fails the workflow. |
-| `skipped` | The repository is archived or has `enabled: false`. |
+| `skipped` | The repository is archived, or has `enabled: false` in `FORK_SYNC_REPOS`. The details are `Fork repository is archived` or `disabled in FORK_SYNC_REPOS`. |
 | `failed` | Missing permission, a network or API error, a missing repository or upstream, unrelated histories, a dev branch named like the target branch, a failed review pull request, or a rejected push. Fails the workflow. |
 | `dry_run` | The merge ran in a temporary directory and nothing was pushed. The details say what would be pushed. A conflict in a dry run is still `conflict`. |
 

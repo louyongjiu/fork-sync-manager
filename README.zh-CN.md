@@ -168,7 +168,7 @@ settings:
 下面这些问题会让运行以退出码 `2` 结束，一个仓库都不处理：
 
 - 缺少 `FORK_SYNC_TOKEN`
-- 未知的键，例如 `dryrun`、`upstream_brnach`、`exclude`
+- 未知的键，例如 `dryrun`、`upstream_brnach`
 - 应该写 `true` 或 `false` 的地方写成了字符串，例如 `"false"`
 - 不合法的分支名，包括 `FORK_SYNC_DEV_BRANCH`
 - 不属于 `owner` 的 `fork`

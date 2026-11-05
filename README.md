@@ -168,7 +168,7 @@ You can also add a repository that is not a GitHub fork, such as a mirror. It mu
 These problems end the run with exit code `2` before any repository is processed:
 
 - a missing `FORK_SYNC_TOKEN`
-- an unknown key, such as `dryrun`, `upstream_brnach`, or `exclude`
+- an unknown key, such as `dryrun` or `upstream_brnach`
 - a string where `true` or `false` is expected, such as `"false"`
 - an invalid branch name, including `FORK_SYNC_DEV_BRANCH`
 - a `fork` that does not belong to `owner`
